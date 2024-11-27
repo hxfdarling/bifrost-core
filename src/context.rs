@@ -1,4 +1,5 @@
 use once_cell::sync::OnceCell;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -6,36 +7,45 @@ static GLOBAL_CONTEXT: OnceCell<Context> = OnceCell::new();
 
 #[derive(Clone, Debug)]
 pub struct Context {
-    // 服务器配置信息
     config: Arc<RwLock<Config>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    // 服务器端口
     pub port: u16,
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    pub enable_https: bool,
+    pub enable_h2: bool,
+    pub h2_only: bool,
 }
 
 impl Context {
-    // 初始化全局 Context
-    pub fn init(port: u16) {
+    pub fn init(
+        port: u16,
+        cert_path: PathBuf,
+        key_path: PathBuf,
+        enable_https: bool,
+        enable_h2: bool,
+        h2_only: bool,
+    ) {
         let _ = GLOBAL_CONTEXT.set(Self {
-            config: Arc::new(RwLock::new(Config { port })),
+            config: Arc::new(RwLock::new(Config {
+                port,
+                cert_path,
+                key_path,
+                enable_https,
+                enable_h2,
+                h2_only,
+            })),
         });
     }
 
-    // 获取全局 Context 实例
     pub fn global() -> &'static Context {
         GLOBAL_CONTEXT.get().expect("Context not initialized")
     }
 
-    // 获取端口号
-    pub async fn get_port(&self) -> u16 {
-        self.config.read().await.port
-    }
-
-    // 设置端口号
-    pub async fn set_port(&self, port: u16) {
-        self.config.write().await.port = port;
+    pub async fn get_config(&self) -> Config {
+        self.config.read().await.clone()
     }
 }

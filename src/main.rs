@@ -1,9 +1,10 @@
+mod context;
+mod error;
 mod plugin;
-use plugin::bifrost_server::BifrostServerPlugin;
-use plugin::traffic_stats::TrafficStats;
 
 use bytes::Bytes;
 use clap::Parser;
+use env_logger;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Body, Incoming};
@@ -13,17 +14,24 @@ use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
+use log::{debug, error, info, warn};
+use plugin::bifrost_server::BifrostServerPlugin;
+use plugin::https_interceptor::HttpsInterceptorPlugin;
+use plugin::traffic_stats::TrafficStats;
 use plugin::{DataDirection, PluginManager};
+use rcgen::{Certificate, CertificateParams, DistinguishedName};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::convert::Infallible;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::time::{sleep, Duration};
-
-mod context;
 
 /// 命令行参数结构
 #[derive(Parser)]
@@ -32,6 +40,18 @@ struct Args {
     /// 监听端口
     #[arg(short = 'p', long = "port", default_value_t = 8080)]
     port: u16,
+
+    /// 是否启用HTTPS流量劫持
+    #[arg(long = "https")]
+    enable_https: bool,
+
+    /// 是否启用 HTTP/2 支持
+    #[arg(long = "h2", help = "启用 HTTP/2 支持")]
+    enable_h2: bool,
+
+    /// 是否仅使用 HTTP/2
+    #[arg(long = "h2-only", help = "仅使用 HTTP/2 协议")]
+    h2_only: bool,
 }
 
 struct ProxyServer {
@@ -45,6 +65,11 @@ impl ProxyServer {
         // 注册流量统计插件
         let traffic_stats = Arc::new(TrafficStats::new());
         plugin_manager.register_plugin(traffic_stats.clone());
+
+        // 注册 HTTPS 拦截器插件
+        plugin_manager.register_plugin(Arc::new(HttpsInterceptorPlugin::new(Some(
+            Duration::from_secs(3600),
+        ))));
 
         // 注册直接响应插件
         plugin_manager.register_plugin(Arc::new(BifrostServerPlugin::new()));
@@ -266,10 +291,54 @@ impl ProxyServer {
 
 #[tokio::main]
 async fn main() {
-    // 解析命令行参数
+    // 初始化日志
+    env_logger::init();
+
     let args = Args::parse();
+
+    let cert_path = PathBuf::from("files/root.crt");
+    let key_path = PathBuf::from("files/root.key");
+
+    // 检查证书文件
+    if !cert_path.exists() || !key_path.exists() {
+        eprintln!(
+            "根证书或密钥文件不存在，请检查路径: {:?}, {:?}",
+            cert_path, key_path
+        );
+        std::process::exit(1);
+    }
+
     // 初始化全局 Context
-    context::Context::init(args.port);
+    context::Context::init(
+        args.port,
+        cert_path.clone(),
+        key_path.clone(),
+        args.enable_https,
+        args.enable_h2,
+        args.h2_only,
+    );
+
+    // 如果启用 HTTPS 劫持，加载证书和密钥
+    let (root_cert, root_key) = if args.enable_https {
+        println!("启用HTTPS流量劫持");
+        if args.enable_h2 {
+            println!("启用 HTTP/2 支持");
+            if args.h2_only {
+                println!("仅使用 HTTP/2 协议");
+            }
+        }
+
+        let cert = fs::read(&cert_path).expect("无法读取根证书");
+        let key = fs::read(&key_path).expect("无法读取密钥文件");
+
+        let root_cert = CertificateDer::from(cert);
+        let root_key = PrivateKeyDer::from(rustls::pki_types::PrivatePkcs8KeyDer::from(key));
+
+        (Some(root_cert), Some(root_key))
+    } else {
+        (None, None)
+    };
+
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let proxy_server = Arc::new(ProxyServer::new());
 

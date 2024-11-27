@@ -28,12 +28,14 @@ impl BifrostServerPlugin {
 
         match path {
             "/config" => {
-                let port = Context::global().get_port().await;
+                let config = Context::global().get_config().await;
                 let response_json = json!({
                     "code": 0,
                     "data": {
-                        "port": port,
-                        // 可以在这里添加更多配置信息
+                        "port": config.port,
+                        "cert_path": config.cert_path.to_string_lossy(),
+                        "key_path": config.key_path.to_string_lossy(),
+                        "enable_https": config.enable_https,
                     }
                 });
 
@@ -70,9 +72,6 @@ impl Plugin for BifrostServerPlugin {
         req: &mut Request<Incoming>,
     ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
     {
-        let port = Context::global().get_port().await;
-        println!("当前服务运行在端口: {}", port);
-
         // 如果请求中没有主机头，表示直接访问Bifrost Server，非代理流量
         if req.uri().host().is_none() {
             println!("No host in request URI, responding directly");
