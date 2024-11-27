@@ -23,6 +23,8 @@ use tokio::net::TcpStream;
 use tokio::select;
 use tokio::time::{sleep, Duration};
 
+mod context;
+
 /// 命令行参数结构
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -206,7 +208,8 @@ impl ProxyServer {
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
         match *req.method() {
             Method::CONNECT => {
-                let connect_response = self.handle_connect(req).await.unwrap_or_else(|_| {
+                let connect_response = self.handle_connect(req).await.unwrap_or_else(|e| {
+                    println!("处理 CONNECT 请求失败: {}", e);
                     Response::builder().status(500).body(Empty::new()).unwrap()
                 });
                 Ok(connect_response.map(|_| Empty::new().map_err(|never| match never {}).boxed()))
@@ -241,18 +244,19 @@ impl ProxyServer {
                     Ok(mut response) => {
                         if let Err(e) = self.plugin_manager.handle_response(&mut response).await {
                             println!("插件处理响应失败: {}", e);
-                            let body = Full::from("Internal Server Error")
+                            let body = Full::from(format!("Plugin response error: {}", e))
                                 .map_err(|never| match never {})
                                 .boxed();
                             return Ok(Response::builder().status(500).body(body).unwrap());
                         }
                         Ok(response.map(|b| b.boxed()))
                     }
-                    Err(_) => {
-                        let body = Full::from("Internal Server Error")
+                    Err(e) => {
+                        println!("请求目标服务器失败: {}", e);
+                        let body = Full::from(format!("Request failed: {}", e))
                             .map_err(|never| match never {})
                             .boxed();
-                        Ok(Response::builder().status(500).body(body).unwrap())
+                        Ok(Response::builder().status(502).body(body).unwrap())
                     }
                 }
             }
@@ -264,7 +268,8 @@ impl ProxyServer {
 async fn main() {
     // 解析命令行参数
     let args = Args::parse();
-
+    // 初始化全局 Context
+    context::Context::init(args.port);
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let proxy_server = Arc::new(ProxyServer::new());
 
