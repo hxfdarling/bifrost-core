@@ -176,6 +176,7 @@ impl TrafficStats {
 impl Plugin for TrafficStats {
     async fn handle_request(
         &self,
+        request_id: u64,
         _req: &mut Request<Incoming>,
     ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
     {
@@ -188,6 +189,7 @@ impl Plugin for TrafficStats {
 
     async fn handle_response(
         &self,
+        request_id: u64,
         _resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         // 统计 HTTP 响应
@@ -195,7 +197,11 @@ impl Plugin for TrafficStats {
         Ok(true)
     }
 
-    async fn handle_connect(&self, _target: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn handle_connect(
+        &self,
+        request_id: u64,
+        _target: &str,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // 统计隧道代理连接
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.current_requests.fetch_add(1, Ordering::Relaxed);
@@ -205,6 +211,7 @@ impl Plugin for TrafficStats {
 
     async fn handle_data(
         &self,
+        request_id: u64,
         direction: DataDirection,
         data: &[u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -223,6 +230,7 @@ impl Plugin for TrafficStats {
 
     async fn handle_connect_close(
         &self,
+        request_id: u64,
         _target: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // 统计隧道代理连接关闭

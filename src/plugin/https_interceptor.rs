@@ -55,16 +55,21 @@ impl HttpsInterceptorPlugin {
 impl Plugin for HttpsInterceptorPlugin {
     async fn handle_request(
         &self,
+        request_id: u64,
         req: &mut Request<Incoming>,
     ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>)> {
         Ok((true, None))
     }
 
-    async fn handle_response(&self, resp: &mut Response<Incoming>) -> Result<bool> {
+    async fn handle_response(
+        &self,
+        request_id: u64,
+        resp: &mut Response<Incoming>,
+    ) -> Result<bool> {
         Ok(true)
     }
 
-    async fn handle_connect(&self, target: &str) -> Result<()> {
+    async fn handle_connect(&self, request_id: u64, target: &str) -> Result<()> {
         // 检查是否启用 HTTPS 拦截
         let config = Context::global().get_config().await;
         if !config.enable_https {
@@ -75,12 +80,17 @@ impl Plugin for HttpsInterceptorPlugin {
         Ok(())
     }
 
-    async fn handle_connect_close(&self, addr: &str) -> Result<()> {
+    async fn handle_connect_close(&self, request_id: u64, addr: &str) -> Result<()> {
         // 实现连接关闭处理逻辑
         Ok(())
     }
 
-    async fn handle_data(&self, direction: DataDirection, data: &[u8]) -> Result<()> {
+    async fn handle_data(
+        &self,
+        request_id: u64,
+        direction: DataDirection,
+        data: &[u8],
+    ) -> Result<()> {
         // 实现数据处理逻辑
         Ok(())
     }

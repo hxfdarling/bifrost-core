@@ -17,6 +17,7 @@ use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};
 use plugin::bifrost_server::BifrostServerPlugin;
 use plugin::https_interceptor::HttpsInterceptorPlugin;
+use plugin::net_storage::NetStorage;
 use plugin::traffic_stats::TrafficStats;
 use plugin::{DataDirection, PluginManager};
 use rcgen::{Certificate, CertificateParams, DistinguishedName};
@@ -26,6 +27,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -52,7 +54,14 @@ struct Args {
     /// 是否仅使用 HTTP/2
     #[arg(long = "h2-only", help = "仅使用 HTTP/2 协议")]
     h2_only: bool,
+
+    /// 最大网络记录数量
+    #[arg(long = "max-records", default_value_t = 1000)]
+    max_network_records: usize,
 }
+
+// 添加请求ID计数器
+static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct ProxyServer {
     plugin_manager: Arc<PluginManager>,
@@ -61,6 +70,8 @@ struct ProxyServer {
 impl ProxyServer {
     pub fn new() -> Self {
         let mut plugin_manager = PluginManager::new();
+        // 注册Bifrost Server插件
+        plugin_manager.register_plugin(Arc::new(BifrostServerPlugin::new()));
 
         // 注册流量统计插件
         let traffic_stats = Arc::new(TrafficStats::new());
@@ -71,8 +82,8 @@ impl ProxyServer {
             Duration::from_secs(3600),
         ))));
 
-        // 注册直接响应插件
-        plugin_manager.register_plugin(Arc::new(BifrostServerPlugin::new()));
+        // 注册 NetStorage 插件
+        plugin_manager.register_plugin(Arc::new(NetStorage::new()));
 
         // 启动统计信息打印任务
         tokio::spawn({
@@ -117,11 +128,12 @@ impl ProxyServer {
     // 新增隧道代理处理函数
     async fn handle_tunnel(
         plugin_manager: &Arc<PluginManager>,
+        request_id: u64,
         upgraded: hyper::upgrade::Upgraded,
         mut target_stream: TcpStream,
         host: String,
     ) {
-        println!("隧道连接已建立 [Host: {}]", host);
+        println!("隧道连接已建立 [RequestID: {}, Host: {}]", request_id, host);
         let mut client_stream = TokioIo::new(upgraded);
         let mut client_buf = [0u8; 8192];
         let mut server_buf = [0u8; 8192];
@@ -131,12 +143,12 @@ impl ProxyServer {
                 result = client_stream.read(&mut client_buf) => {
                     match result {
                         Ok(0) => {
-                            println!("客户端关闭连接 [Host: {}]", host);
+                            println!("客户端关闭连接 [RequestID: {}, Host: {}]", request_id, host);
                             break;
                         }
                         Ok(n) => {
                             // 统计上行流量
-                            if let Err(e) = plugin_manager.handle_data(DataDirection::Upstream, &client_buf[..n]).await {
+                            if let Err(e) = plugin_manager.handle_data(request_id, DataDirection::Upstream, &client_buf[..n]).await {
                                 println!("统计上行流量失败: {}", e);
                             }
                             if let Err(e) = target_stream.write_all(&client_buf[..n]).await {
@@ -153,12 +165,12 @@ impl ProxyServer {
                 result = target_stream.read(&mut server_buf) => {
                     match result {
                         Ok(0) => {
-                            println!("服务器关闭连接");
+                            println!("服务器关闭连接 [RequestID: {}]", request_id);
                             break;
                         }
                         Ok(n) => {
                             // 统计下行流量
-                            if let Err(e) = plugin_manager.handle_data(DataDirection::Downstream, &server_buf[..n]).await {
+                            if let Err(e) = plugin_manager.handle_data(request_id, DataDirection::Downstream, &server_buf[..n]).await {
                                 println!("统计下行流量失败: {}", e);
                             }
                             if let Err(e) = client_stream.write_all(&server_buf[..n]).await {
@@ -176,10 +188,13 @@ impl ProxyServer {
         }
 
         // 在隧道关闭时调用插件的 on_connect_close
-        if let Err(e) = plugin_manager.handle_connect_close(&host).await {
-            println!("处理连接关闭失败 [Host: {}]: {}", host, e);
+        if let Err(e) = plugin_manager.handle_connect_close(request_id, &host).await {
+            println!(
+                "处理连接关闭失败 [RequestID: {}, Host: {}]: {}",
+                request_id, host, e
+            );
         }
-        println!("HTTPS 隧道关闭 [Host: {}]", host);
+        println!("HTTPS 隧道关闭 [RequestID: {}, Host: {}]", request_id, host);
     }
 
     // 重构后的 handle_connect 函数
@@ -187,6 +202,7 @@ impl ProxyServer {
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<Empty<Bytes>>, hyper::Error> {
+        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         let auth = match req.uri().authority() {
             Some(auth) => auth,
             None => {
@@ -204,7 +220,7 @@ impl ProxyServer {
         println!("正在建立到 {} 的 HTTPS 隧道 [Host: {}]", addr, auth.host());
 
         // 通知插件系统 CONNECT 请求
-        if let Err(e) = self.plugin_manager.handle_connect(&addr).await {
+        if let Err(e) = self.plugin_manager.handle_connect(request_id, &addr).await {
             println!("插件处理 CONNECT 请求失败: {}", e);
             return Ok(Response::builder().status(500).body(Empty::new()).unwrap());
         }
@@ -227,6 +243,7 @@ impl ProxyServer {
                         Ok(upgraded) => {
                             ProxyServer::handle_tunnel(
                                 &plugin_manager,
+                                request_id,
                                 upgraded,
                                 target_stream,
                                 host,
@@ -259,8 +276,13 @@ impl ProxyServer {
                 Ok(connect_response.map(|_| Empty::new().map_err(|never| match never {}).boxed()))
             }
             _ => {
+                let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
                 // 处理请求，如果插件返回 false，表示不继续处理
-                match self.plugin_manager.handle_request(&mut req).await {
+                match self
+                    .plugin_manager
+                    .handle_request(request_id, &mut req)
+                    .await
+                {
                     Ok((false, Some(response))) => {
                         return Ok(response);
                     }
@@ -286,7 +308,11 @@ impl ProxyServer {
 
                 match client.request(req).await {
                     Ok(mut response) => {
-                        if let Err(e) = self.plugin_manager.handle_response(&mut response).await {
+                        if let Err(e) = self
+                            .plugin_manager
+                            .handle_response(request_id, &mut response)
+                            .await
+                        {
                             println!("插件处理响应失败: {}", e);
                             let body = Full::from(format!("Plugin response error: {}", e))
                                 .map_err(|never| match never {})
@@ -335,6 +361,7 @@ async fn main() {
         args.enable_https,
         args.enable_h2,
         args.h2_only,
+        Some(args.max_network_records),
     );
 
     // 如果启用 HTTPS 劫持，加载证书和密钥

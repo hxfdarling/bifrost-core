@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 pub mod bifrost_server;
 pub mod https_interceptor;
+pub mod net_storage;
 pub mod traffic_stats;
 
 #[async_trait]
@@ -15,20 +16,31 @@ pub trait Plugin: Send + Sync {
     // HTTP 请求处理
     async fn handle_request(
         &self,
+        request_id: u64,
         req: &mut Request<Incoming>,
     ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>;
     // HTTP 响应处理
     async fn handle_response(
         &self,
+        request_id: u64,
         resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>>;
     // 连接处理
-    async fn handle_connect(&self, addr: &str) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn handle_connect(
+        &self,
+        request_id: u64,
+        addr: &str,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
     // 连接关闭处理
-    async fn handle_connect_close(&self, addr: &str) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn handle_connect_close(
+        &self,
+        request_id: u64,
+        addr: &str,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
     // 数据处理
     async fn handle_data(
         &self,
+        request_id: u64,
         direction: DataDirection,
         data: &[u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>>;
@@ -57,11 +69,12 @@ impl PluginManager {
 
     pub async fn handle_request(
         &self,
+        request_id: u64,
         req: &mut Request<Incoming>,
     ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
     {
         for plugin in &self.plugins {
-            let (continue_processing, response) = plugin.handle_request(req).await?;
+            let (continue_processing, response) = plugin.handle_request(request_id, req).await?;
             if !continue_processing {
                 return Ok((false, response));
             }
@@ -71,40 +84,47 @@ impl PluginManager {
 
     pub async fn handle_response(
         &self,
+        request_id: u64,
         resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         for plugin in &self.plugins {
-            if plugin.handle_response(resp).await? {
+            if plugin.handle_response(request_id, resp).await? {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    pub async fn handle_connect(&self, target: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn handle_connect(
+        &self,
+        request_id: u64,
+        target: &str,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         for plugin in &self.plugins {
-            plugin.handle_connect(target).await?;
+            plugin.handle_connect(request_id, target).await?;
         }
         Ok(())
     }
 
     pub async fn handle_connect_close(
         &self,
+        request_id: u64,
         target: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         for plugin in &self.plugins {
-            plugin.handle_connect_close(target).await?;
+            plugin.handle_connect_close(request_id, target).await?;
         }
         Ok(())
     }
 
     pub async fn handle_data(
         &self,
+        request_id: u64,
         direction: DataDirection,
         data: &[u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         for plugin in &self.plugins {
-            plugin.handle_data(direction, data).await?;
+            plugin.handle_data(request_id, direction, data).await?;
         }
         Ok(())
     }
