@@ -114,116 +114,135 @@ impl ProxyServer {
         }
     }
 
+    // 新增隧道代理处理函数
+    async fn handle_tunnel(
+        plugin_manager: &Arc<PluginManager>,
+        upgraded: hyper::upgrade::Upgraded,
+        mut target_stream: TcpStream,
+        host: String,
+    ) {
+        println!("隧道连接已建立 [Host: {}]", host);
+        let mut client_stream = TokioIo::new(upgraded);
+        let mut client_buf = [0u8; 8192];
+        let mut server_buf = [0u8; 8192];
+
+        loop {
+            select! {
+                result = client_stream.read(&mut client_buf) => {
+                    match result {
+                        Ok(0) => {
+                            println!("客户端关闭连接 [Host: {}]", host);
+                            break;
+                        }
+                        Ok(n) => {
+                            // 统计上行流量
+                            if let Err(e) = plugin_manager.handle_data(DataDirection::Upstream, &client_buf[..n]).await {
+                                println!("统计上行流量失败: {}", e);
+                            }
+                            if let Err(e) = target_stream.write_all(&client_buf[..n]).await {
+                                println!("写入目标服务器失败: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            println!("从客户端读取失败: {}", e);
+                            break;
+                        }
+                    }
+                }
+                result = target_stream.read(&mut server_buf) => {
+                    match result {
+                        Ok(0) => {
+                            println!("服务器关闭连接");
+                            break;
+                        }
+                        Ok(n) => {
+                            // 统计下行流量
+                            if let Err(e) = plugin_manager.handle_data(DataDirection::Downstream, &server_buf[..n]).await {
+                                println!("统计下行流量失败: {}", e);
+                            }
+                            if let Err(e) = client_stream.write_all(&server_buf[..n]).await {
+                                println!("写入客户端失败: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            println!("从服务器读取失败: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 在隧道关闭时调用插件的 on_connect_close
+        if let Err(e) = plugin_manager.handle_connect_close(&host).await {
+            println!("处理连接关闭失败 [Host: {}]: {}", host, e);
+        }
+        println!("HTTPS 隧道关闭 [Host: {}]", host);
+    }
+
+    // 重构后的 handle_connect 函数
     async fn handle_connect(
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<Empty<Bytes>>, hyper::Error> {
-        if let Some(auth) = req.uri().authority() {
-            let addr = if !auth.port().is_some() {
-                format!("{}:443", auth)
-            } else {
-                auth.to_string()
-            };
-
-            println!("正在建立到 {} 的 HTTPS 隧道 [Host: {}]", addr, auth.host());
-
-            // 通知插件系统 CONNECT 请求
-            if let Err(e) = self.plugin_manager.handle_connect(&addr).await {
-                println!("插件处理 CONNECT 请求失败: {}", e);
-                return Ok(Response::builder().status(500).body(Empty::new()).unwrap());
+        let auth = match req.uri().authority() {
+            Some(auth) => auth,
+            None => {
+                println!("无效的 CONNECT 请求");
+                return Ok(Response::builder().status(400).body(Empty::new()).unwrap());
             }
+        };
 
-            match TcpStream::connect(&addr).await {
-                Ok(mut target_stream) => {
-                    println!("成功连接到目标服务器 [Host: {}]", auth.host());
-
-                    let resp = Response::builder()
-                        .status(200)
-                        .header("Connection", "keep-alive")
-                        .body(Empty::new())
-                        .unwrap();
-
-                    tokio::spawn({
-                        let plugin_manager = self.plugin_manager.clone(); // 克隆 plugin_manager
-                        let host = auth.host().to_string(); // 保存 host 信息供后续使用
-                        async move {
-                            match hyper::upgrade::on(req).await {
-                                Ok(upgraded) => {
-                                    println!("隧道连接已建立 [Host: {}]", host);
-                                    let mut client_stream = TokioIo::new(upgraded);
-                                    let mut client_buf = [0u8; 8192];
-                                    let mut server_buf = [0u8; 8192];
-
-                                    loop {
-                                        tokio::select! {
-                                            result = client_stream.read(&mut client_buf) => {
-                                                match result {
-                                                    Ok(0) => {
-                                                        println!("客户端关闭连接 [Host: {}]", host);
-                                                        break;
-                                                    }
-                                                    Ok(n) => {
-                                                        // 统计上行流量
-                                                        if let Err(e) = plugin_manager.handle_data(DataDirection::Upstream, &client_buf[..n]).await {
-                                                            println!("统计上行流量失败: {}", e);
-                                                        }
-                                                        if let Err(e) = target_stream.write_all(&client_buf[..n]).await {
-                                                            println!("写入目标服务器失败: {}", e);
-                                                            break;
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        println!("从客户端读取失败: {}", e);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                            result = target_stream.read(&mut server_buf) => {
-                                                match result {
-                                                    Ok(0) => {
-                                                        println!("服务器关闭连接");
-                                                        break;
-                                                    }
-                                                    Ok(n) => {
-                                                        // 统计下行流量
-                                                        if let Err(e) = plugin_manager.handle_data(DataDirection::Downstream, &server_buf[..n]).await {
-                                                            println!("统计下行流量失败: {}", e);
-                                                        }
-                                                        if let Err(e) = client_stream.write_all(&server_buf[..n]).await {
-                                                            println!("写入客户端失败: {}", e);
-                                                            break;
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        println!("从服务器读取失败: {}", e);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // 在隧道关闭时调用插件的 on_connect_close
-                                    if let Err(e) = plugin_manager.handle_connect_close(&host).await
-                                    {
-                                        println!("处理连接关闭失败 [Host: {}]: {}", host, e);
-                                    }
-                                    println!("HTTPS 隧道关闭 [Host: {}]", host);
-                                }
-                                Err(e) => println!("连接升级失败 [Host: {}]: {}", host, e),
-                            }
-                        }
-                    });
-
-                    Ok(resp)
-                }
-                Err(e) => {
-                    println!("连接目标服务失败: {}", e);
-                    Ok(Response::builder().status(502).body(Empty::new()).unwrap())
-                }
-            }
+        let addr = if !auth.port().is_some() {
+            format!("{}:443", auth)
         } else {
-            println!("无效的 CONNECT 请求");
-            Ok(Response::builder().status(400).body(Empty::new()).unwrap())
+            auth.to_string()
+        };
+
+        println!("正在建立到 {} 的 HTTPS 隧道 [Host: {}]", addr, auth.host());
+
+        // 通知插件系统 CONNECT 请求
+        if let Err(e) = self.plugin_manager.handle_connect(&addr).await {
+            println!("插件处理 CONNECT 请求失败: {}", e);
+            return Ok(Response::builder().status(500).body(Empty::new()).unwrap());
+        }
+
+        match TcpStream::connect(&addr).await {
+            Ok(target_stream) => {
+                println!("成功连接到目标服务器 [Host: {}]", auth.host());
+
+                let resp = Response::builder()
+                    .status(200)
+                    .header("Connection", "keep-alive")
+                    .body(Empty::new())
+                    .unwrap();
+
+                let plugin_manager = self.plugin_manager.clone();
+                let host = auth.host().to_string();
+
+                tokio::spawn(async move {
+                    match hyper::upgrade::on(req).await {
+                        Ok(upgraded) => {
+                            ProxyServer::handle_tunnel(
+                                &plugin_manager,
+                                upgraded,
+                                target_stream,
+                                host,
+                            )
+                            .await;
+                        }
+                        Err(e) => println!("连接升级失败 [Host: {}]: {}", host, e),
+                    }
+                });
+
+                Ok(resp)
+            }
+            Err(e) => {
+                println!("连接目标服务失败: {}", e);
+                Ok(Response::builder().status(502).body(Empty::new()).unwrap())
+            }
         }
     }
 
