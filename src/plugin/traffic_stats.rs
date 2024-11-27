@@ -5,6 +5,9 @@ use crate::plugin::Plugin;
 use hyper::{Request, Response};
 use hyper::body::Incoming;
 use crate::plugin::DataDirection;
+use std::error::Error;
+use http_body_util::{Full, BodyExt, combinators::BoxBody};
+use bytes::Bytes;
 
 pub struct TrafficStats {
     bytes_in: AtomicU64,
@@ -155,25 +158,29 @@ impl TrafficStats {
 
 #[async_trait]
 impl Plugin for TrafficStats {
-    async fn on_request(&self, _req: &mut Request<Incoming>) -> Result<(), Box<dyn std::error::Error>> {
-        // 增加总请求数和当前请求数
+    async fn handle_request(&self, _req: &mut Request<Incoming>) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>> {
+        // 统计 HTTP 请求
+        self.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.current_requests.fetch_add(1, Ordering::Relaxed);
+        self.requests_this_second.fetch_add(1, Ordering::Relaxed);
+        Ok((true, None))  // 返回 true 和 None，表示继续处理
+    }
+
+    async fn handle_response(&self, _resp: &mut Response<Incoming>) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        // 统计 HTTP 响应
+        self.current_requests.fetch_sub(1, Ordering::Relaxed);
+        Ok(true)
+    }
+
+    async fn handle_connect(&self, _target: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // 统计隧道代理连接
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.current_requests.fetch_add(1, Ordering::Relaxed);
         self.requests_this_second.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn on_response(&self, _resp: &mut Response<Incoming>) -> Result<(), Box<dyn std::error::Error>> {
-        // 请求结束，减少当前请求数
-        self.current_requests.fetch_sub(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    async fn on_connect(&self, _target: &str) -> Result<(), Box<dyn std::error::Error>> {
-        Ok(())
-    }
-
-    async fn on_data(&self, direction: DataDirection, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_data(&self, direction: DataDirection, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
         match direction {
             DataDirection::Upstream => {
                 self.bytes_out.fetch_add(data.len() as u64, Ordering::Relaxed);
@@ -185,8 +192,8 @@ impl Plugin for TrafficStats {
         Ok(())
     }
 
-    async fn on_connect_close(&self, _target: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // 当 CONNECT 隧道关闭时，减少当前请求数
+    async fn handle_connect_close(&self, _target: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // 统计隧道代理连接关闭
         self.current_requests.fetch_sub(1, Ordering::Relaxed);
         Ok(())
     }
