@@ -20,6 +20,16 @@ use hyper_util::client::legacy::Client;
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use hyper_util::rt::TokioIo;
+use clap::Parser;
+
+/// 命令行参数结构
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// 监听端口
+    #[arg(short = 'p', long = "port", default_value_t = 8080)]
+    port: u16,
+}
 
 struct ProxyServer {
     plugin_manager: Arc<PluginManager>,
@@ -230,7 +240,10 @@ impl ProxyServer {
 
 #[tokio::main]
 async fn main() {
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    // 解析命令行参数
+    let args = Args::parse();
+    
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let proxy_server = Arc::new(ProxyServer::new());
     
     let listener = TcpListener::bind(addr).await.unwrap();
