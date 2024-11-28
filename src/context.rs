@@ -69,7 +69,6 @@ pub struct Config {
     pub key_path: PathBuf,
     pub enable_https: bool,
     pub enable_h2: bool,
-    pub h2_only: bool,
     pub max_network_records: usize,
 }
 
@@ -80,7 +79,6 @@ impl Context {
         key_path: PathBuf,
         enable_https: bool,
         enable_h2: bool,
-        h2_only: bool,
         max_network_records: Option<usize>,
     ) {
         let _ = GLOBAL_CONTEXT.set(Self {
@@ -90,7 +88,6 @@ impl Context {
                 key_path,
                 enable_https,
                 enable_h2,
-                h2_only,
                 max_network_records: max_network_records.unwrap_or(10000),
             })),
             network_records: Arc::new(RwLock::new(VecDeque::new())),

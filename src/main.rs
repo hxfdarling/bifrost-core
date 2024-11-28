@@ -43,10 +43,6 @@ struct Args {
     #[arg(long = "h2", help = "启用 HTTP/2 支持")]
     enable_h2: bool,
 
-    /// 是否仅使用 HTTP/2
-    #[arg(long = "h2-only", help = "仅使用 HTTP/2 协议")]
-    h2_only: bool,
-
     /// 最大网络记录数量
     #[arg(long = "max-records", default_value_t = 1000)]
     max_network_records: usize,
@@ -94,6 +90,14 @@ impl ProxyServer {
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
         let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
 
+        // 检查是否为 WebSocket 升级请求
+        let is_ws_upgrade = req
+            .headers()
+            .get(hyper::header::UPGRADE)
+            .and_then(|h| h.to_str().ok())
+            .map(|h| h.to_lowercase().contains("websocket"))
+            .unwrap_or(false);
+
         // 处理请求，如果插件返回 false，表示不继续处理
         match PluginManager::global()
             .handle_request(request_id, &mut req)
@@ -119,7 +123,10 @@ impl ProxyServer {
         }
 
         let https = HttpsConnector::new();
-        let client = Client::builder(TokioExecutor::new()).build::<_, Incoming>(https);
+        let client = Client::builder(TokioExecutor::new())
+            .http1_preserve_header_case(true)
+            .http1_title_case_headers(true)
+            .build::<_, Incoming>(https);
 
         // 保存请求的必要信息
         let req_method = req.method().clone();
@@ -136,6 +143,11 @@ impl ProxyServer {
 
         match client.request(req).await {
             Ok(mut response) => {
+                // 如果是 WebSocket 升级响应，直接返回
+                if is_ws_upgrade && response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
+                    return Ok(response.map(|b| b.boxed()));
+                }
+
                 if let Err(e) = PluginManager::global()
                     .handle_response(request_id, &req_clone, &mut response)
                     .await
@@ -196,7 +208,6 @@ async fn main() {
         key_path.clone(),
         args.enable_https,
         args.enable_h2,
-        args.h2_only,
         Some(args.max_network_records),
     );
 
@@ -205,9 +216,6 @@ async fn main() {
         println!("启用HTTPS流量劫持");
         if args.enable_h2 {
             println!("启用 HTTP/2 支持");
-            if args.h2_only {
-                println!("仅使用 HTTP/2 协议");
-            }
         }
 
         let cert = fs::read(&cert_path).expect("无法读取根证书");

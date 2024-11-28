@@ -479,6 +479,12 @@ impl HttpsInterceptor {
     async fn handle_request(
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        // 检查是否为 WebSocket 升级请求
+        if is_websocket_upgrade(&req) {
+            println!("WebSocket 升级请求 {}", req.uri());
+            return handle_websocket_upgrade(req).await;
+        }
+
         let https = HttpsConnector::new();
         let client = Client::builder(TokioExecutor::new())
             .http1_title_case_headers(true)
@@ -536,6 +542,110 @@ impl HttpsInterceptor {
                     )
                     .unwrap())
             }
+        }
+    }
+}
+
+// 新增辅助函数
+fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
+    req.headers()
+        .get(hyper::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_lowercase().contains("websocket"))
+        .unwrap_or(false)
+        && req
+            .headers()
+            .get(hyper::header::CONNECTION)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_lowercase().contains("upgrade"))
+            .unwrap_or(false)
+}
+
+async fn handle_websocket_upgrade(
+    req: Request<Incoming>,
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+    let https = HttpsConnector::new();
+    let client = Client::builder(TokioExecutor::new())
+        .http1_title_case_headers(true)
+        .http1_preserve_header_case(true)
+        .build::<_, Incoming>(https);
+
+    // 构建目标 WebSocket URL
+    let uri_string = if req.uri().scheme().is_none() {
+        let host = req
+            .headers()
+            .get(hyper::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("localhost");
+        format!(
+            "wss://{}{}",
+            host,
+            req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("")
+        )
+    } else {
+        // 将 https 替换为 wss
+        req.uri().to_string().replace("https://", "wss://")
+    };
+
+    println!("WebSocket 升级请求: {}", uri_string);
+
+    // 构建新的 WebSocket 升级请求
+    let mut builder = Request::builder()
+        .method(req.method())
+        .uri(uri_string)
+        .version(req.version());
+
+    // 复制所有请求头
+    for (name, value) in req.headers() {
+        builder = builder.header(name, value);
+    }
+
+    let new_req = builder
+        .body(req.into_body())
+        .map_err(|e| format!("构建 WebSocket 请求失败: {}", e))?;
+
+    // 发送请求并处理响应
+    match client.request(new_req).await {
+        Ok(response) => {
+            if response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
+                // 构建升级响应，确保包含所有必要的升级头
+                let mut builder = Response::builder()
+                    .status(hyper::StatusCode::SWITCHING_PROTOCOLS)
+                    .header(hyper::header::CONNECTION, "upgrade")
+                    .header(hyper::header::UPGRADE, "websocket");
+
+                // 复制所有 WebSocket 相关的响应头
+                for (name, value) in response.headers() {
+                    if name == hyper::header::SEC_WEBSOCKET_ACCEPT
+                        || name == hyper::header::SEC_WEBSOCKET_PROTOCOL
+                        || name == hyper::header::SEC_WEBSOCKET_EXTENSIONS
+                        || name == hyper::header::SEC_WEBSOCKET_VERSION
+                    {
+                        builder = builder.header(name, value);
+                    }
+                }
+
+                println!("WebSocket 升级成功，返回升级响应");
+
+                Ok(builder
+                    .body(Empty::new().map_err(|never| match never {}).boxed())
+                    .unwrap())
+            } else {
+                // 如果不是升级响应，则直接转发原始响应
+                println!("WebSocket 升级失败，状态码: {}", response.status());
+                Ok(response.map(|b| b.boxed()))
+            }
+        }
+        Err(e) => {
+            error!("WebSocket 请求转发失败: {}", e);
+            Ok(Response::builder()
+                .status(502)
+                .body(
+                    Full::new(Bytes::from(format!("WebSocket Gateway Error: {}", e)))
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .unwrap())
         }
     }
 }
