@@ -167,13 +167,16 @@ impl ProxyServer {
     async fn handle_connect(
         &self,
         req: Request<Incoming>,
-    ) -> Result<Response<Empty<Bytes>>, hyper::Error> {
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
         let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         let auth = match req.uri().authority() {
             Some(auth) => auth,
             None => {
                 println!("无效的 CONNECT 请求");
-                return Ok(Response::builder().status(400).body(Empty::new()).unwrap());
+                return Ok(Response::builder()
+                    .status(400)
+                    .body(Empty::new().map_err(|never| match never {}).boxed())
+                    .unwrap());
             }
         };
 
@@ -188,7 +191,10 @@ impl ProxyServer {
         // 通知插件系统 CONNECT 请求
         if let Err(e) = self.plugin_manager.handle_connect(request_id, &addr).await {
             println!("插件处理 CONNECT 请求失败: {}", e);
-            return Ok(Response::builder().status(500).body(Empty::new()).unwrap());
+            return Ok(Response::builder()
+                .status(500)
+                .body(Empty::new().map_err(|never| match never {}).boxed())
+                .unwrap());
         }
 
         match TcpStream::connect(&addr).await {
@@ -198,7 +204,7 @@ impl ProxyServer {
                 let resp = Response::builder()
                     .status(200)
                     .header("Connection", "keep-alive")
-                    .body(Empty::new())
+                    .body(Empty::new().map_err(|never| match never {}).boxed())
                     .unwrap();
 
                 let plugin_manager = self.plugin_manager.clone();
@@ -224,92 +230,95 @@ impl ProxyServer {
             }
             Err(e) => {
                 println!("连接目标服务失败: {}", e);
-                Ok(Response::builder().status(502).body(Empty::new()).unwrap())
+                Ok(Response::builder()
+                    .status(502)
+                    .body(Empty::new().map_err(|never| match never {}).boxed())
+                    .unwrap())
             }
         }
     }
 
-    async fn proxy_handler(
+    // 新增 handle_http 函数
+    async fn handle_http(
         &self,
         mut req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
-        match *req.method() {
-            Method::CONNECT => {
-                let connect_response = self.handle_connect(req).await.unwrap_or_else(|e| {
-                    println!("处理 CONNECT 请求失败: {}", e);
-                    Response::builder().status(500).body(Empty::new()).unwrap()
-                });
-                Ok(connect_response.map(|_| Empty::new().map_err(|never| match never {}).boxed()))
+        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+        // 处理请求，如果插件返回 false，表示不继续处理
+        match self
+            .plugin_manager
+            .handle_request(request_id, &mut req)
+            .await
+        {
+            Ok((false, Some(response))) => {
+                return Ok(response);
             }
-            _ => {
-                let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-                // 处理请求，如果插件返回 false，表示不继续处理
-                match self
+            Ok((false, None)) => {
+                let body = Full::from(Bytes::from("Bad Plugin Response"))
+                    .map_err(|never| match never {})
+                    .boxed();
+                return Ok(Response::builder().status(400).body(body).unwrap());
+            }
+            Ok((true, _)) => (), // 继续处理
+            Err(e) => {
+                println!("插件处理请求失败: {}", e);
+                let body = Full::from(Bytes::from("Internal Server Error"))
+                    .map_err(|never| match never {})
+                    .boxed();
+                return Ok(Response::builder().status(500).body(body).unwrap());
+            }
+        }
+
+        let https = HttpsConnector::new();
+        let client = Client::builder(TokioExecutor::new()).build::<_, Incoming>(https);
+
+        // 保存请求的必要信息
+        let req_method = req.method().clone();
+        let req_uri = req.uri().clone();
+        let req_headers = req.headers().clone();
+        let mut req_clone = Request::builder()
+            .uri(req_uri)
+            .method(req_method)
+            .body(())
+            .unwrap();
+        for (key, value) in req_headers.iter() {
+            req_clone.headers_mut().insert(key, value.clone());
+        }
+
+        match client.request(req).await {
+            Ok(mut response) => {
+                if let Err(e) = self
                     .plugin_manager
-                    .handle_request(request_id, &mut req)
+                    .handle_response(request_id, &req_clone, &mut response)
                     .await
                 {
-                    Ok((false, Some(response))) => {
-                        return Ok(response);
-                    }
-                    Ok((false, None)) => {
-                        // 如果插件要求停止处理但没有提供响应，返回 400 错误
-                        let body = Full::from(Bytes::from("Bad Plugin Response"))
-                            .map_err(|never| match never {})
-                            .boxed();
-                        return Ok(Response::builder().status(400).body(body).unwrap());
-                    }
-                    Ok((true, _)) => (), // 继续处理
-                    Err(e) => {
-                        println!("插件处理请求失败: {}", e);
-                        let body = Full::from(Bytes::from("Internal Server Error"))
-                            .map_err(|never| match never {})
-                            .boxed();
-                        return Ok(Response::builder().status(500).body(body).unwrap());
-                    }
+                    println!("插件处理响应失败: {}", e);
+                    let body = Full::from(format!("Plugin response error: {}", e))
+                        .map_err(|never| match never {})
+                        .boxed();
+                    return Ok(Response::builder().status(500).body(body).unwrap());
                 }
-
-                let https = HttpsConnector::new();
-                let client = Client::builder(TokioExecutor::new()).build::<_, Incoming>(https);
-
-                // 保存请求的必要信息
-                let req_method = req.method().clone();
-                let req_uri = req.uri().clone();
-                let req_headers = req.headers().clone();
-                let mut req_clone = Request::builder()
-                    .uri(req_uri)
-                    .method(req_method)
-                    .body(())
-                    .unwrap();
-                // 将req_headers 复制到req_clone上面，使用循环遍历，
-                for (key, value) in req_headers.iter() {
-                    req_clone.headers_mut().insert(key, value.clone());
-                }
-
-                match client.request(req).await {
-                    Ok(mut response) => {
-                        if let Err(e) = self
-                            .plugin_manager
-                            .handle_response(request_id, &req_clone, &mut response)
-                            .await
-                        {
-                            println!("插件处理响应失败: {}", e);
-                            let body = Full::from(format!("Plugin response error: {}", e))
-                                .map_err(|never| match never {})
-                                .boxed();
-                            return Ok(Response::builder().status(500).body(body).unwrap());
-                        }
-                        Ok(response.map(|b| b.boxed()))
-                    }
-                    Err(e) => {
-                        println!("请求目标服务器失败: {}", e);
-                        let body = Full::from(format!("Request failed: {}", e))
-                            .map_err(|never| match never {})
-                            .boxed();
-                        Ok(Response::builder().status(502).body(body).unwrap())
-                    }
-                }
+                Ok(response.map(|b| b.boxed()))
             }
+            Err(e) => {
+                println!("请求目标服务器失败: {}", e);
+                let body = Full::from(format!("Request failed: {}", e))
+                    .map_err(|never| match never {})
+                    .boxed();
+                Ok(Response::builder().status(502).body(body).unwrap())
+            }
+        }
+    }
+
+    // 修改后的 proxy_handler 函数
+    async fn proxy_handler(
+        &self,
+        req: Request<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
+        match *req.method() {
+            Method::CONNECT => self.handle_connect(req).await,
+            _ => self.handle_http(req).await,
         }
     }
 }
