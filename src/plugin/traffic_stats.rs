@@ -6,6 +6,7 @@ use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response};
+use log::info;
 use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -82,7 +83,7 @@ impl TrafficStatsPlugin {
             loop {
                 let traffic_stats = Context::global().get_traffic_stats();
                 let stats = traffic_stats.as_ref();
-                println!(
+                info!(
                     "流量统计 - 入站: {:.2} MB ({:.2} MB/s, 峰值: {:.2} MB/s), 出站: {:.2} MB ({:.2} MB/s, 峰值: {:.2} MB/s), 请求: {} (总量: {}), QPS: {} (峰值: {})",
                     stats.bytes_in.load(Ordering::Relaxed) as f64 / 1_048_576.0,
                     stats.current_speed_in.load(Ordering::Relaxed) as f64 / 1_048_576.0,

@@ -6,6 +6,7 @@ use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
+use log::{info, warn};
 use serde_json::{json, Value};
 use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -211,10 +212,10 @@ impl Plugin for BifrostServerPlugin {
     {
         let port = Context::global().get_config().await.port;
         let target_host = Self::get_host(req);
-        println!("Original target: {}", target_host);
+        info!("Original target: {}", target_host);
 
         if Self::is_bifrost_host(&target_host, port) {
-            println!("Request handled by Bifrost Server");
+            info!("Request handled by Bifrost Server");
             let response = self.host_server(req).await?;
             return Ok((false, Some(response)));
         }
@@ -232,7 +233,7 @@ impl Plugin for BifrostServerPlugin {
         let target_host = Self::get_host(req);
 
         if Self::is_bifrost_host(&target_host, port) {
-            println!("Response handled by Bifrost Server");
+            info!("Response handled by Bifrost Server");
             return Ok(false);
         }
         Ok(true)

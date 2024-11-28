@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use hyper::{body::Incoming, Request, Response};
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::net::SocketAddr;
@@ -160,8 +161,8 @@ impl Plugin for NetStorage {
         resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         // 打印日志
-        println!("handle_response: {}", request_id);
-        println!("response headers: {:?}", resp.headers());
+        info!("handle_response: {}", request_id);
+        info!("response headers: {:?}", resp.headers());
 
         // 计算响应头大小
         let mut response_size = 0;

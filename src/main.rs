@@ -1,11 +1,10 @@
 mod context;
-mod error;
 mod https_interceptor;
 mod plugin;
 
 use bytes::Bytes;
 use clap::Parser;
-use env_logger;
+use env_logger::{Builder, Env};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use https_interceptor::HttpsInterceptor;
@@ -16,6 +15,7 @@ use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
+use log::{debug, error, info, warn};
 
 use plugin::{DataDirection, PluginManager};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -114,7 +114,7 @@ impl ProxyServer {
             }
             Ok((true, _)) => (), // 继续处理
             Err(e) => {
-                println!("插件处理请求失败: {}", e);
+                error!("插件处理请求失败: {}", e);
                 let body = Full::from(Bytes::from("Internal Server Error"))
                     .map_err(|never| match never {})
                     .boxed();
@@ -152,7 +152,7 @@ impl ProxyServer {
                     .handle_response(request_id, &req_clone, &mut response)
                     .await
                 {
-                    println!("插件处理响应失败: {}", e);
+                    error!("插件处理响应失败: {}", e);
                     let body = Full::from(format!("Plugin response error: {}", e))
                         .map_err(|never| match never {})
                         .boxed();
@@ -161,7 +161,7 @@ impl ProxyServer {
                 Ok(response.map(|b| b.boxed()))
             }
             Err(e) => {
-                println!("请求目标服务器失败: {}", e);
+                error!("请求目标服务器失败: {}", e);
                 let body = Full::from(format!("Request failed: {}", e))
                     .map_err(|never| match never {})
                     .boxed();
@@ -184,8 +184,10 @@ impl ProxyServer {
 
 #[tokio::main]
 async fn main() {
-    // 初始化日志
-    env_logger::init();
+    // 初始化 env_logger
+    Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
 
     let args = Args::parse();
 
@@ -194,7 +196,7 @@ async fn main() {
 
     // 检查证书文件
     if !cert_path.exists() || !key_path.exists() {
-        eprintln!(
+        error!(
             "根证书或密钥文件不存在，请检查路径: {:?}, {:?}",
             cert_path, key_path
         );
@@ -213,9 +215,9 @@ async fn main() {
 
     // 如果启用 HTTPS 劫持，加载证书和密钥
     let (root_cert, root_key) = if args.enable_https {
-        println!("启用HTTPS流量劫持");
+        info!("启用HTTPS流量劫持");
         if args.enable_h2 {
-            println!("启用 HTTP/2 支持");
+            info!("启用 HTTP/2 支持");
         }
 
         let cert = fs::read(&cert_path).expect("无法读取根证书");
@@ -237,7 +239,7 @@ async fn main() {
     let proxy_server = Arc::new(ProxyServer::new());
 
     let listener = TcpListener::bind(addr).await.unwrap();
-    println!("代理服务器运行在 http://{}", addr);
+    info!("代理服务器运行在 http://{}", addr);
 
     loop {
         let (stream, _) = listener.accept().await.unwrap();
@@ -257,7 +259,7 @@ async fn main() {
                 .with_upgrades()
                 .await
             {
-                println!("服器错误: {}", err);
+                error!("服器错误: {}", err);
             }
         });
     }
