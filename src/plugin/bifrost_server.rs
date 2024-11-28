@@ -168,18 +168,7 @@ impl BifrostServerPlugin {
             ))
             .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
     }
-}
-
-#[async_trait]
-impl Plugin for BifrostServerPlugin {
-    async fn handle_request(
-        &self,
-        request_id: u64,
-        req: &mut Request<Incoming>,
-    ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
-    {
-        let port = Context::global().get_config().await.port;
-
+    fn get_host<B>(req: &Request<B>) -> String {
         // 获取原始目标地址的几种方式：
         let target_host = if req.method() == hyper::Method::CONNECT {
             // 1. 对于 CONNECT 请求（HTTPS），目标地址在 URI 中
@@ -203,33 +192,55 @@ impl Plugin for BifrostServerPlugin {
                 }
             }
         };
+        target_host
+    }
 
+    fn is_bifrost_host(host: &str, port: u16) -> bool {
+        host.contains(&format!("127.0.0.1:{}", port))
+            || host.contains(&format!("localhost:{}", port))
+    }
+}
+
+#[async_trait]
+impl Plugin for BifrostServerPlugin {
+    async fn handle_request(
+        &self,
+        _request_id: u64,
+        req: &mut Request<Incoming>,
+    ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
+    {
+        let port = Context::global().get_config().await.port;
+        let target_host = Self::get_host(req);
         println!("Original target: {}", target_host);
 
-        // 判断是否是访问 Bifrost 服务器的请求
-        if target_host.contains(&format!("127.0.0.1:{}", port))
-            || target_host.contains(&format!("localhost:{}", port))
-        {
+        if Self::is_bifrost_host(&target_host, port) {
             println!("Request handled by Bifrost Server");
             let response = self.host_server(req).await?;
             return Ok((false, Some(response)));
         }
 
-        println!("Request forwarded to proxy target: {}", target_host);
         Ok((true, None))
     }
 
     async fn handle_response(
         &self,
-        request_id: u64,
-        resp: &mut Response<Incoming>,
+        _request_id: u64,
+        req: &Request<()>,
+        _resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        let port = Context::global().get_config().await.port;
+        let target_host = Self::get_host(req);
+
+        if Self::is_bifrost_host(&target_host, port) {
+            println!("Response handled by Bifrost Server");
+            return Ok(false);
+        }
         Ok(true)
     }
 
     async fn handle_connect(
         &self,
-        request_id: u64,
+        _request_id: u64,
         addr: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
@@ -237,17 +248,17 @@ impl Plugin for BifrostServerPlugin {
 
     async fn handle_connect_close(
         &self,
-        request_id: u64,
-        addr: &str,
+        _request_id: u64,
+        _addr: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 
     async fn handle_data(
         &self,
-        request_id: u64,
+        _request_id: u64,
         direction: DataDirection,
-        data: &[u8],
+        _data: &[u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }

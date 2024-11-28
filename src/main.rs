@@ -272,11 +272,25 @@ impl ProxyServer {
                 let https = HttpsConnector::new();
                 let client = Client::builder(TokioExecutor::new()).build::<_, Incoming>(https);
 
+                // 保存请求的必要信息
+                let req_method = req.method().clone();
+                let req_uri = req.uri().clone();
+                let req_headers = req.headers().clone();
+                let mut req_clone = Request::builder()
+                    .uri(req_uri)
+                    .method(req_method)
+                    .body(())
+                    .unwrap();
+                // 将req_headers 复制到req_clone上面，使用循环遍历，
+                for (key, value) in req_headers.iter() {
+                    req_clone.headers_mut().insert(key, value.clone());
+                }
+
                 match client.request(req).await {
                     Ok(mut response) => {
                         if let Err(e) = self
                             .plugin_manager
-                            .handle_response(request_id, &mut response)
+                            .handle_response(request_id, &req_clone, &mut response)
                             .await
                         {
                             println!("插件处理响应失败: {}", e);

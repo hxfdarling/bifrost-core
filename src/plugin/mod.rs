@@ -23,6 +23,7 @@ pub trait Plugin: Send + Sync {
     async fn handle_response(
         &self,
         request_id: u64,
+        req: &Request<()>,
         resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>>;
     // 连接处理
@@ -85,10 +86,11 @@ impl PluginManager {
     pub async fn handle_response(
         &self,
         request_id: u64,
+        req: &Request<()>,
         resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         for plugin in &self.plugins {
-            let continue_processing = plugin.handle_response(request_id, resp).await?;
+            let continue_processing = plugin.handle_response(request_id, req, resp).await?;
             if !continue_processing {
                 return Ok(false);
             }

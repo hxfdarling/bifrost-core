@@ -155,6 +155,8 @@ impl Plugin for NetStorage {
     async fn handle_response(
         &self,
         request_id: u64,
+        req: &Request<()>,
+
         resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         // 打印日志

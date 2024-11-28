@@ -119,6 +119,8 @@ impl Plugin for TrafficStatsPlugin {
     async fn handle_response(
         &self,
         request_id: u64,
+        req: &Request<()>,
+
         _resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let stats = Context::global().get_traffic_stats();
