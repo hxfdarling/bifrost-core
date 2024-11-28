@@ -225,10 +225,10 @@ impl HttpsInterceptor {
                                     timeout.as_mut().reset(tokio::time::Instant::now() + TIMEOUT_DURATION);
 
                                     if let Err(e) = plugin_manager.handle_data(request_id, DataDirection::Upstream, &client_buf[..n]).await {
-                                        println!("统计上行流量失败: {}", e);
+                                        error!("统计上行流量失败: {}", e);
                                     }
                                     if let Err(e) = target_stream.write_all(&client_buf[..n]).await {
-                                        println!("写入目标服务器失败: {}", e);
+                                        error!("写入目标服务器失败: {}", e);
                                         error_count += 1;
                                         if error_count >= MAX_ERRORS {
                                             break;
@@ -236,7 +236,7 @@ impl HttpsInterceptor {
                                     }
                                 }
                                 Err(e) => {
-                                    println!("从客户端读取失败: {}", e);
+                                    error!("从客户端读取失败: {}", e);
                                     error_count += 1;
                                     if error_count >= MAX_ERRORS {
                                         break;
@@ -255,10 +255,10 @@ impl HttpsInterceptor {
                                     timeout.as_mut().reset(tokio::time::Instant::now() + TIMEOUT_DURATION);
 
                                     if let Err(e) = plugin_manager.handle_data(request_id, DataDirection::Downstream, &server_buf[..n]).await {
-                                        println!("统计下行流量失败: {}", e);
+                                        warn!("统计下行流量失败: {}", e);
                                     }
                                     if let Err(e) = client_stream.write_all(&server_buf[..n]).await {
-                                        println!("写入客户端失败: {}", e);
+                                        error!("写入客户端失败: {}", e);
                                         error_count += 1;
                                         if error_count >= MAX_ERRORS {
                                             break;
@@ -266,7 +266,7 @@ impl HttpsInterceptor {
                                     }
                                 }
                                 Err(e) => {
-                                    println!("从服务器读取失败: {}", e);
+                                    error!("从服务器读取失败: {}", e);
                                     error_count += 1;
                                     if error_count >= MAX_ERRORS {
                                         break;
@@ -275,7 +275,7 @@ impl HttpsInterceptor {
                             }
                         }
                         _ = &mut timeout => {
-                            println!("连接超时（{}秒无数据传输），闭隧道 [RequestID: {}, Host: {}]",
+                            error!("连接超时（{}秒无数据传输），闭隧道 [RequestID: {}, Host: {}]",
                                 TIMEOUT_DURATION.as_secs(), request_id, host);
                             break;
                         }
@@ -293,13 +293,13 @@ impl HttpsInterceptor {
                 }
             }
             Err(e) => {
-                println!("处理连接失败: {}", e);
+                error!("处理连接失败: {}", e);
             }
         };
 
         // 在隧道关闭时调用插件的 on_connect_close
         if let Err(e) = plugin_manager.handle_connect_close(request_id, &host).await {
-            println!(
+            error!(
                 "处理连接关闭失败 [RequestID: {}, Host: {}]: {}",
                 request_id, host, e
             );
@@ -334,7 +334,7 @@ impl HttpsInterceptor {
                             )
                             .await;
                         }
-                        Err(e) => println!("连接升级失败: {}", e),
+                        Err(e) => error!("连接升级失败: {}", e),
                     }
                 });
 
@@ -347,7 +347,7 @@ impl HttpsInterceptor {
                     .unwrap())
             }
             Err(e) => {
-                println!("连接目标服务器失败: {}", e);
+                error!("连接目标服务器失败: {}", e);
                 Ok(Self::build_502_error(&format!("连接目标服务器失败: {}", e)))
             }
         }
@@ -426,7 +426,7 @@ impl HttpsInterceptor {
                                                 request_id, host
                                             );
                                         } else {
-                                            println!("HTTP/2 连接失败,{}", host);
+                                            error!("HTTP/2 连接失败,{}", host);
                                         }
                                     } else {
                                         // 使用 HTTP/1.1 服务器处理连接
@@ -439,17 +439,17 @@ impl HttpsInterceptor {
                                                 request_id, host
                                             );
                                         } else {
-                                            println!("HTTP/1.1 连接失败,{}", host);
+                                            error!("HTTP/1.1 连接失败,{}", host);
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    println!("TLS 握手失败: {}", e);
+                                    error!("TLS 握手失败: {}", e);
                                 }
                             }
                         }
                         Err(e) => {
-                            println!("连接升级失败: {}", e);
+                            error!("连接升级失败: {}", e);
                         }
                     }
                 });
@@ -463,7 +463,7 @@ impl HttpsInterceptor {
                         .unwrap(),
                 ))
             } else {
-                println!("无法连接到目标服务器 [Host: {}]", host);
+                error!("无法连接到目标服务器 [Host: {}]", host);
                 Ok(Some(Self::build_502_error(&format!(
                     "无法连接到目标服务器: {}",
                     host
