@@ -8,6 +8,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde_json::{json, Value};
 use std::error::Error;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 type HandlerResult = Result<Value, Box<dyn Error + Send + Sync>>;
 
@@ -38,6 +39,7 @@ impl BifrostServerPlugin {
             "/" => Self::wrap_response(Ok(json!("Bifrost is working"))).await,
             "/config" => Self::wrap_response(Self::handle_config(req).await).await,
             "/get_record" => Self::wrap_response(Self::handle_get_record(req).await).await,
+            "/traffic_stats" => Self::wrap_response(Self::handle_traffic_stats(req).await).await,
             _ => Self::handle_not_found(),
         }?;
 
@@ -117,6 +119,33 @@ impl BifrostServerPlugin {
             .collect::<Result<Vec<_>, Box<dyn Error + Send + Sync>>>()?;
 
         Ok(Value::Array(filtered_records))
+    }
+
+    async fn handle_traffic_stats(_req: &Request<Incoming>) -> HandlerResult {
+        let context = Context::global();
+        let stats = context.get_traffic_stats();
+        let stats = stats.as_ref();
+
+        Ok(json!({
+            "bytes_in": stats.bytes_in.load(Ordering::Relaxed),
+            "bytes_out": stats.bytes_out.load(Ordering::Relaxed),
+            "total_requests": stats.total_requests,
+            "current_requests": stats.current_requests,
+            "qps": stats.last_qps,
+            "speed_in": stats.current_speed_in,
+            "speed_out": stats.current_speed_out,
+            "max_speed_in": stats.max_speed_in,
+            "max_speed_out": stats.max_speed_out,
+            "max_qps": stats.max_qps,
+            "formatted": {
+                "bytes_in": format!("{:.2} MB", stats.bytes_in.load(Ordering::Relaxed) as f64 / 1_048_576.0),
+                "bytes_out": format!("{:.2} MB", stats.bytes_out.load(Ordering::Relaxed) as f64 / 1_048_576.0),
+                "speed_in": format!("{:.2} MB/s", stats.current_speed_in.load(Ordering::Relaxed) as f64 / 1_048_576.0),
+                "speed_out": format!("{:.2} MB/s", stats.current_speed_out.load(Ordering::Relaxed) as f64 / 1_048_576.0),
+                "max_speed_in": format!("{:.2} MB/s", stats.max_speed_in.load(Ordering::Relaxed) as f64 / 1_048_576.0),
+                "max_speed_out": format!("{:.2} MB/s", stats.max_speed_out.load(Ordering::Relaxed) as f64 / 1_048_576.0),
+            }
+        }))
     }
 
     fn handle_not_found(

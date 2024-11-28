@@ -14,18 +14,16 @@ use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
-use log::{debug, error, info, warn};
 use plugin::bifrost_server::BifrostServerPlugin;
 use plugin::https_interceptor::HttpsInterceptorPlugin;
 use plugin::net_storage::NetStorage;
-use plugin::traffic_stats::TrafficStats;
+use plugin::traffic_stats::TrafficStatsPlugin;
 use plugin::{DataDirection, PluginManager};
 use rcgen::{Certificate, CertificateParams, DistinguishedName};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::convert::Infallible;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -74,8 +72,8 @@ impl ProxyServer {
         plugin_manager.register_plugin(Arc::new(BifrostServerPlugin::new()));
 
         // 注册流量统计插件
-        let traffic_stats = Arc::new(TrafficStats::new());
-        plugin_manager.register_plugin(traffic_stats.clone());
+        let traffic_stats_plugin = Arc::new(TrafficStatsPlugin::new());
+        plugin_manager.register_plugin(traffic_stats_plugin);
 
         // 注册 HTTPS 拦截器插件
         plugin_manager.register_plugin(Arc::new(HttpsInterceptorPlugin::new(Some(
@@ -85,8 +83,8 @@ impl ProxyServer {
         // 注册 NetStorage 插件
         plugin_manager.register_plugin(Arc::new(NetStorage::new()));
 
-        // // 启动统计信息打印任务
-        // traffic_stats.start_stats_printer();
+        // 启动统计信息打印任务
+        TrafficStatsPlugin::start_stats_printer();
 
         Self {
             plugin_manager: Arc::new(plugin_manager),

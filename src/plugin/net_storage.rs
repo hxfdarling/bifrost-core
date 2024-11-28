@@ -234,10 +234,6 @@ impl Plugin for NetStorage {
         direction: DataDirection,
         data: &[u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // 打印日志
-        println!("handle_data: {}", request_id);
-        println!("data direction: {:?}", direction);
-        println!("data length: {}", data.len());
         Context::global()
             .update_network_record_by_id(request_id, |record| {
                 match direction {
