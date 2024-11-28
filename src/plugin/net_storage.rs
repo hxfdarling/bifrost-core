@@ -208,16 +208,17 @@ impl Plugin for NetStorage {
     async fn handle_connect(
         &self,
         request_id: u64,
-        addr: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
+        req: &Request<()>,
+    ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
+    {
+        Ok((true, None))
     }
 
     async fn handle_connect_close(
         &self,
         request_id: u64,
         addr: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         // 连接关闭时，如果状态不是 Completed，则标记为 Cancelled
         Context::global()
             .update_network_record_by_id(request_id, |record| {
@@ -227,7 +228,7 @@ impl Plugin for NetStorage {
             })
             .await
             .ok();
-        Ok(())
+        Ok(true)
     }
 
     async fn handle_data(

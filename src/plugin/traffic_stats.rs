@@ -131,13 +131,14 @@ impl Plugin for TrafficStatsPlugin {
     async fn handle_connect(
         &self,
         request_id: u64,
-        _target: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        req: &Request<()>,
+    ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
+    {
         let stats = Context::global().get_traffic_stats();
         stats.total_requests.fetch_add(1, Ordering::Relaxed);
         stats.current_requests.fetch_add(1, Ordering::Relaxed);
         stats.requests_this_second.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        Ok((true, None))
     }
 
     async fn handle_data(
@@ -166,9 +167,9 @@ impl Plugin for TrafficStatsPlugin {
         &self,
         request_id: u64,
         _target: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let stats = Context::global().get_traffic_stats();
         stats.current_requests.fetch_sub(1, Ordering::Relaxed);
-        Ok(())
+        Ok(true)
     }
 }

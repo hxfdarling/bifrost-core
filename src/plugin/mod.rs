@@ -3,13 +3,22 @@ use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use hyper::body::{Body, Incoming};
 use hyper::{Request, Response};
+use once_cell::sync::OnceCell;
+
+use crate::plugin::bifrost_server::BifrostServerPlugin;
+
+use crate::plugin::net_storage::NetStorage;
+use crate::plugin::traffic_stats::TrafficStatsPlugin;
 use std::error::Error;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub mod bifrost_server;
-pub mod https_interceptor;
+
 pub mod net_storage;
 pub mod traffic_stats;
+// 确保 PLUGIN_MANAGER 的类型是:
+static PLUGIN_MANAGER: OnceCell<Arc<PluginManager>> = OnceCell::new();
 
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -30,14 +39,14 @@ pub trait Plugin: Send + Sync {
     async fn handle_connect(
         &self,
         request_id: u64,
-        addr: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+        req: &Request<()>,
+    ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>;
     // 连接关闭处理
     async fn handle_connect_close(
         &self,
         request_id: u64,
         addr: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> Result<bool, Box<dyn Error + Send + Sync>>;
     // 数据处理
     async fn handle_data(
         &self,
@@ -58,10 +67,25 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
-    pub fn new() -> Self {
-        Self {
+    pub fn init() {
+        let mut plugin_manager = Self {
             plugins: Vec::new(),
-        }
+        };
+        // 注册插件
+        // 先注册 bifrost_server 插件
+        plugin_manager.register_plugin(Arc::new(BifrostServerPlugin::new()));
+        plugin_manager.register_plugin(Arc::new(TrafficStatsPlugin::new()));
+        plugin_manager.register_plugin(Arc::new(NetStorage::new()));
+
+        // 最后再包装成 Arc 并设置到全局
+        let _ = PLUGIN_MANAGER.set(Arc::new(plugin_manager));
+    }
+
+    pub fn global() -> Arc<PluginManager> {
+        PLUGIN_MANAGER
+            .get()
+            .expect("PluginManager not initialized")
+            .clone()
     }
 
     pub fn register_plugin(&mut self, plugin: Arc<dyn Plugin>) {
@@ -101,23 +125,30 @@ impl PluginManager {
     pub async fn handle_connect(
         &self,
         request_id: u64,
-        target: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        req: &Request<()>,
+    ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
+    {
         for plugin in &self.plugins {
-            plugin.handle_connect(request_id, target).await?;
+            let (continue_processing, response) = plugin.handle_connect(request_id, req).await?;
+            if !continue_processing {
+                return Ok((false, response));
+            }
         }
-        Ok(())
+        Ok((true, None))
     }
 
     pub async fn handle_connect_close(
         &self,
         request_id: u64,
         target: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         for plugin in &self.plugins {
-            plugin.handle_connect_close(request_id, target).await?;
+            let continue_processing = plugin.handle_connect_close(request_id, target).await?;
+            if !continue_processing {
+                return Ok(false);
+            }
         }
-        Ok(())
+        Ok(true)
     }
 
     pub async fn handle_data(

@@ -241,17 +241,18 @@ impl Plugin for BifrostServerPlugin {
     async fn handle_connect(
         &self,
         _request_id: u64,
-        addr: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
+        req: &Request<()>,
+    ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
+    {
+        Ok((true, None))
     }
 
     async fn handle_connect_close(
         &self,
         _request_id: u64,
         _addr: &str,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
+    ) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        Ok(true)
     }
 
     async fn handle_data(
