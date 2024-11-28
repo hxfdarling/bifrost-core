@@ -104,51 +104,80 @@ impl ProxyServer {
         let mut client_buf = [0u8; 8192];
         let mut server_buf = [0u8; 8192];
 
+        // 增加超时时间到5分钟
+        const TIMEOUT_DURATION: Duration = Duration::from_secs(300);
+        let mut timeout = Box::pin(sleep(TIMEOUT_DURATION));
+
+        // 添加错误计数器
+        let mut error_count = 0;
+        const MAX_ERRORS: u32 = 3;
+
         loop {
             select! {
                 result = client_stream.read(&mut client_buf) => {
                     match result {
                         Ok(0) => {
-                            println!("客户端关闭连接 [RequestID: {}, Host: {}]", request_id, host);
+                            println!("客户端正常关闭连接 [RequestID: {}, Host: {}]", request_id, host);
                             break;
                         }
                         Ok(n) => {
-                            // 统计上行流量
+                            error_count = 0; // 重置错误计数
+                            timeout.as_mut().reset(tokio::time::Instant::now() + TIMEOUT_DURATION);
+
                             if let Err(e) = plugin_manager.handle_data(request_id, DataDirection::Upstream, &client_buf[..n]).await {
                                 println!("统计上行流量失败: {}", e);
                             }
                             if let Err(e) = target_stream.write_all(&client_buf[..n]).await {
                                 println!("写入目标服务器失败: {}", e);
-                                break;
+                                error_count += 1;
+                                if error_count >= MAX_ERRORS {
+                                    break;
+                                }
                             }
                         }
                         Err(e) => {
                             println!("从客户端读取失败: {}", e);
-                            break;
+                            error_count += 1;
+                            if error_count >= MAX_ERRORS {
+                                break;
+                            }
                         }
                     }
                 }
                 result = target_stream.read(&mut server_buf) => {
                     match result {
                         Ok(0) => {
-                            println!("服务器关闭连接 [RequestID: {}]", request_id);
+                            println!("服务器正常关闭连接 [RequestID: {}]", request_id);
                             break;
                         }
                         Ok(n) => {
-                            // 统计下行流量
+                            error_count = 0; // 重置错误计数
+                            timeout.as_mut().reset(tokio::time::Instant::now() + TIMEOUT_DURATION);
+
                             if let Err(e) = plugin_manager.handle_data(request_id, DataDirection::Downstream, &server_buf[..n]).await {
                                 println!("统计下行流量失败: {}", e);
                             }
                             if let Err(e) = client_stream.write_all(&server_buf[..n]).await {
                                 println!("写入客户端失败: {}", e);
-                                break;
+                                error_count += 1;
+                                if error_count >= MAX_ERRORS {
+                                    break;
+                                }
                             }
                         }
                         Err(e) => {
                             println!("从服务器读取失败: {}", e);
-                            break;
+                            error_count += 1;
+                            if error_count >= MAX_ERRORS {
+                                break;
+                            }
                         }
                     }
+                }
+                _ = &mut timeout => {
+                    println!("连接超时（{}秒无数据传输），关闭隧道 [RequestID: {}, Host: {}]",
+                        TIMEOUT_DURATION.as_secs(), request_id, host);
+                    break;
                 }
             }
         }
