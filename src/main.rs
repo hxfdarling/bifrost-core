@@ -86,39 +86,7 @@ impl ProxyServer {
         plugin_manager.register_plugin(Arc::new(NetStorage::new()));
 
         // 启动统计信息打印任务
-        tokio::spawn({
-            let traffic_stats = traffic_stats.clone();
-            async move {
-                loop {
-                    let (
-                        bytes_in,
-                        bytes_out,
-                        total_reqs,
-                        current_reqs,
-                        qps,
-                        speed_in,
-                        speed_out,
-                        max_speed_in,
-                        max_speed_out,
-                        max_qps,
-                    ) = traffic_stats.get_stats();
-                    println!(
-                        "流量统计 - 入站: {:.2} MB ({:.2} MB/s, 峰值: {:.2} MB/s), 出站: {:.2} MB ({:.2} MB/s, 峰值: {:.2} MB/s), 请求: {} (总量: {}), QPS: {} (峰值: {})",
-                        bytes_in as f64 / 1_048_576.0,
-                        speed_in as f64 / 1_048_576.0,
-                        max_speed_in as f64 / 1_048_576.0,
-                        bytes_out as f64 / 1_048_576.0,
-                        speed_out as f64 / 1_048_576.0,
-                        max_speed_out as f64 / 1_048_576.0,
-                        current_reqs,
-                        total_reqs,
-                        qps,
-                        max_qps
-                    );
-                    sleep(Duration::from_secs(1)).await;
-                }
-            }
-        });
+        traffic_stats.start_stats_printer();
 
         Self {
             plugin_manager: Arc::new(plugin_manager),
