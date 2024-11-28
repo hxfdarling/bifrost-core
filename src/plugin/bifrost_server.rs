@@ -22,6 +22,18 @@ impl BifrostServerPlugin {
         &self,
         req: &Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Box<dyn Error + Send + Sync>> {
+        if req.method() == hyper::Method::OPTIONS {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body(BoxBody::new(
+                    Full::new(Bytes::new()).map_err(|never| match never {}),
+                ))
+                .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>);
+        }
+
         let response = match req.uri().path() {
             "/" => Self::wrap_response(Ok(json!("Bifrost is working"))).await,
             "/config" => Self::wrap_response(Self::handle_config(req).await).await,
@@ -45,6 +57,9 @@ impl BifrostServerPlugin {
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type")
                     .body(BoxBody::new(
                         Full::from(Bytes::from(response_json.to_string()))
                             .map_err(|never| match never {}),
@@ -60,6 +75,9 @@ impl BifrostServerPlugin {
                 Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header("Content-Type", "application/json")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type")
                     .body(BoxBody::new(
                         Full::from(Bytes::from(response_json.to_string()))
                             .map_err(|never| match never {}),
@@ -106,6 +124,9 @@ impl BifrostServerPlugin {
         Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Content-Type")
             .body(BoxBody::new(
                 Full::from(Bytes::from(
                     json!({
@@ -174,7 +195,7 @@ impl Plugin for BifrostServerPlugin {
         request_id: u64,
         resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
-        Ok(false)
+        Ok(true)
     }
 
     async fn handle_connect(

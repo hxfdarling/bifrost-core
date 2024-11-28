@@ -81,18 +81,19 @@ impl PluginManager {
         }
         Ok((true, None))
     }
-
+    // 返回的bool表示是否继续后续流程，也包括中断后续插件执行
     pub async fn handle_response(
         &self,
         request_id: u64,
         resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         for plugin in &self.plugins {
-            if plugin.handle_response(request_id, resp).await? {
-                return Ok(true);
+            let continue_processing = plugin.handle_response(request_id, resp).await?;
+            if !continue_processing {
+                return Ok(false);
             }
         }
-        Ok(false)
+        Ok(true)
     }
 
     pub async fn handle_connect(

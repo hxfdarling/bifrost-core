@@ -93,6 +93,20 @@ impl Plugin for NetStorage {
             (remote_addr, 0)
         };
 
+        // 计算请求头大小
+        let mut request_size = 0;
+        // 计算请求行大小 (Method + Path + Version)
+        request_size += req.method().as_str().len() + 1; // +1 for space
+        request_size += req.uri().path().len() + 1; // +1 for space
+        request_size += format!("{:?}", req.version()).len() + 2; // +2 for \r\n
+
+        // 计算请求头大小
+        for (name, value) in req.headers() {
+            request_size += name.as_str().len() + 2; // +2 for ": "
+            request_size += value.len() + 2; // +2 for \r\n
+        }
+        request_size += 2; // 请求头结束的空行 \r\n
+
         let record = NetworkRecord {
             id: request_id,
             client_ip,
@@ -112,7 +126,7 @@ impl Plugin for NetStorage {
             response_headers: vec![],
             request_body: None,
             response_body: None,
-            request_size: 0,
+            request_size, // 更新请求大小初始值
             response_size: 0,
             start_time: SystemTime::now(),
             end_time: None,
@@ -146,6 +160,21 @@ impl Plugin for NetStorage {
         // 打印日志
         println!("handle_response: {}", request_id);
         println!("response headers: {:?}", resp.headers());
+
+        // 计算响应头大小
+        let mut response_size = 0;
+        // 计算状态行大小
+        response_size += format!("{:?}", resp.version()).len() + 1; // +1 for space
+        response_size += resp.status().as_str().len() + 1; // +1 for space
+        response_size += resp.status().canonical_reason().unwrap_or("").len() + 2; // +2 for \r\n
+
+        // 计算响应头大小
+        for (name, value) in resp.headers() {
+            response_size += name.as_str().len() + 2; // +2 for ": "
+            response_size += value.len() + 2; // +2 for \r\n
+        }
+        response_size += 2; // 响应头结束的空行 \r\n
+
         Context::global()
             .update_network_record_by_id(request_id, |record| {
                 record.state = RequestState::Receiving;
@@ -162,6 +191,7 @@ impl Plugin for NetStorage {
                     .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                     .collect();
                 record.end_time = Some(SystemTime::now());
+                record.response_size = response_size; // 设置响应头大小
 
                 if let Ok(duration) = record.end_time.unwrap().duration_since(record.start_time) {
                     record.download_duration = Some(duration);
@@ -170,7 +200,7 @@ impl Plugin for NetStorage {
             .await
             .ok();
 
-        Ok(false)
+        Ok(true)
     }
 
     async fn handle_connect(

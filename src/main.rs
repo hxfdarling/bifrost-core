@@ -85,8 +85,8 @@ impl ProxyServer {
         // 注册 NetStorage 插件
         plugin_manager.register_plugin(Arc::new(NetStorage::new()));
 
-        // 启动统计信息打印任务
-        traffic_stats.start_stats_printer();
+        // // 启动统计信息打印任务
+        // traffic_stats.start_stats_printer();
 
         Self {
             plugin_manager: Arc::new(plugin_manager),
