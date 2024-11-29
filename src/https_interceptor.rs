@@ -364,6 +364,24 @@ impl HttpsInterceptor {
             }
         }
     }
+    // 判断是否为WebSocket升级请求
+    fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
+        let is_upgrade = req
+            .headers()
+            .get(hyper::header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_lowercase().contains("websocket"))
+            .unwrap_or(false)
+            && req
+                .headers()
+                .get(hyper::header::CONNECTION)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_lowercase().contains("upgrade"))
+                .unwrap_or(false);
+
+        is_upgrade
+    }
+
     // WebSocket升处理
     async fn handle_websocket_connection(
         req: Request<Incoming>,
@@ -404,20 +422,14 @@ impl HttpsInterceptor {
         tokio::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
-                    let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
-                        max_message_size: Some(64 << 20),
-                        max_frame_size: Some(16 << 20),
-                        max_send_queue: None,
-                        max_write_buffer_size: 4096,
-                        write_buffer_size: 1024,
-                        accept_unmasked_frames: false,
-                    };
+                    let ws_config =
+                        tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
 
                     // 创建客户端 WebSocket 流，使用 TokioIo 包装
                     let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
                         TokioIo::new(upgraded),
                         tokio_tungstenite::tungstenite::protocol::Role::Server,
-                        Some(ws_config.clone()),
+                        Some(ws_config),
                     )
                     .await;
 
@@ -543,7 +555,7 @@ impl HttpsInterceptor {
                                         .unwrap_or_default()
                                         .to_string();
 
-                                    let is_websocket = is_websocket_upgrade(&req);
+                                    let is_websocket = Self::is_websocket_upgrade(&req);
                                     match if is_websocket {
                                         Self::handle_websocket_connection(req, &new_host).await
                                     } else {
@@ -565,7 +577,7 @@ impl HttpsInterceptor {
                                     .with_upgrades()
                                     .await
                                 {
-                                    error!("HTTP连接处理失败 [Host: {}]: ", e);
+                                    error!("HTTP连接处理失败 [Host: {}]: {}", host, e);
                                 }
                             }
                             Err(e) => error!("TLS握手失败 [Host: {}]: {}", host, e),
@@ -657,22 +669,4 @@ impl HttpsInterceptor {
             }
         }
     }
-}
-
-// 判断是否为WebSocket升级请求
-fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
-    let is_upgrade = req
-        .headers()
-        .get(hyper::header::UPGRADE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_lowercase().contains("websocket"))
-        .unwrap_or(false)
-        && req
-            .headers()
-            .get(hyper::header::CONNECTION)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_lowercase().contains("upgrade"))
-            .unwrap_or(false);
-
-    is_upgrade
 }
