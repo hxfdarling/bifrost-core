@@ -10,7 +10,7 @@ use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use std::collections::HashMap;
@@ -26,6 +26,7 @@ use tokio::time::sleep;
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 type Result<T, E = Box<dyn Error + Send + Sync>> = std::result::Result<T, E>;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioExecutor;
@@ -38,10 +39,10 @@ use rustls::internal;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls_pemfile;
+use sha1::{Digest, Sha1};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
-
 #[derive(Clone)]
 struct CachedCert {
     cert: Arc<CertificateDer<'static>>,
@@ -202,7 +203,7 @@ impl HttpsInterceptor {
             )
             .unwrap()
     }
-    // 隧道代理处理
+    // 隧道代理处
     async fn handle_tunnel(
         request_id: u64,
         upgraded: hyper::upgrade::Upgraded,
@@ -258,7 +259,7 @@ impl HttpsInterceptor {
                         result = target_stream.read(&mut server_buf) => {
                             match result {
                                 Ok(0) => {
-                                    info!("服务器正常关闭连接 [RequestID: {}]", request_id);
+                                    info!("服务正常关闭连接 [RequestID: {}]", request_id);
                                     break;
                                 }
                                 Ok(n) => {
@@ -363,6 +364,121 @@ impl HttpsInterceptor {
             }
         }
     }
+    // WebSocket升处理
+    async fn handle_websocket_connection(
+        req: Request<Incoming>,
+        host: &String,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        info!("处理 WebSocket 升级请求 [Host: {}]", host);
+
+        // 获取必要的 WebSocket 握手头信息
+        let ws_key = req
+            .headers()
+            .get("Sec-WebSocket-Key")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .unwrap_or("".to_string());
+
+        // 生成 WebSocket accept key
+        let sha1 = Sha1::new()
+            .chain_update(ws_key.as_bytes())
+            .chain_update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+            .finalize();
+        let accept = STANDARD.encode(sha1);
+
+        // 构建目标 URI
+        let target_uri = if req.uri().scheme().is_none() {
+            format!(
+                "wss://{}{}",
+                req.headers()
+                    .get(hyper::header::HOST)
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or(host),
+                req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("")
+            )
+        } else {
+            req.uri().to_string().replace("http", "ws")
+        };
+        let host = host.to_string(); // 克 host
+                                     // 创建到目标服务器的 WebSocket 连接
+        tokio::spawn(async move {
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+                        max_message_size: Some(64 << 20),
+                        max_frame_size: Some(16 << 20),
+                        max_send_queue: None,
+                        max_write_buffer_size: 4096,
+                        write_buffer_size: 1024,
+                        accept_unmasked_frames: false,
+                    };
+
+                    // 创建客户端 WebSocket 流，使用 TokioIo 包装
+                    let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                        TokioIo::new(upgraded),
+                        tokio_tungstenite::tungstenite::protocol::Role::Server,
+                        Some(ws_config.clone()),
+                    )
+                    .await;
+
+                    // 连接目标服务器
+                    match connect_async(&target_uri).await {
+                        Ok((target_ws_stream, _)) => {
+                            let (mut client_write, mut client_read) = ws_stream.split();
+                            let (mut target_write, mut target_read) = target_ws_stream.split();
+
+                            info!("WebSocket 双向流建立成功 [Host: {}]", host);
+
+                            // 创建两个转发任务
+                            let client_to_server = async {
+                                while let Some(msg) = client_read.next().await {
+                                    match msg {
+                                        Ok(msg) => {
+                                            if target_write.send(msg).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            };
+
+                            let server_to_client = async {
+                                while let Some(msg) = target_read.next().await {
+                                    match msg {
+                                        Ok(msg) => {
+                                            if client_write.send(msg).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            };
+
+                            // 同时运行两个转发任务
+                            tokio::select! {
+                                _ = client_to_server => {},
+                                _ = server_to_client => {},
+                            }
+                        }
+                        Err(e) => error!("连接目标 WebSocket 服务器失败 [Host: {}]: {}", host, e),
+                    }
+                }
+                Err(e) => error!("WebSocket 升级失败 [Host: {}]: {}", host, e),
+            }
+        });
+
+        // 返回 WebSocket 升级响应
+        Ok(Response::builder()
+            .status(101)
+            .header("Upgrade", "websocket")
+            .header("Connection", "Upgrade")
+            .header("Sec-WebSocket-Accept", accept)
+            .body(Empty::new().map_err(|never| match never {}).boxed())
+            .unwrap())
+    }
+
     pub async fn handle_connect(
         &self,
         request_id: u64,
@@ -382,12 +498,11 @@ impl HttpsInterceptor {
             auth_str.clone()
         };
 
-        // 在 upgrade 之前取需的信息
+        // 获取目标服务器的host
         let host = auth_str.split(':').next().unwrap_or(&auth_str).to_string();
+        // 是否启用HTTPS 拦截
         let enable_https = config.enable_https;
-
-        // 从 context 获取 HTTP/2 配置
-        let config = Context::global().get_config().await;
+        // 是否启用HTTP/2
         let enable_h2 = config.enable_h2;
 
         let acceptor = if enable_https {
@@ -410,98 +525,75 @@ impl HttpsInterceptor {
         };
         // HTTPS 拦截模
         if let Some(acceptor) = acceptor {
-            // 连接到目标服务器
-            if let Ok(target_stream) = TcpStream::connect(&addr).await {
-                tokio::spawn(async move {
-                    match hyper::upgrade::on(req).await {
-                        Ok(upgraded) => {
-                            info!("开始TLS握手 [Host: {}]", host);
-                            // 接受 TLS 连接
-                            match acceptor.accept(TokioIo::new(upgraded)).await {
-                                Ok(tls_stream) => {
-                                    info!("TLS 握手成功 [Host: {}]", host);
-                                    let io = TokioIo::new(tls_stream);
-                                    let service = service_fn(move |req| {
-                                        HttpsInterceptor::handle_request(req)
-                                    });
+            tokio::spawn(async move {
+                match hyper::upgrade::on(req).await {
+                    Ok(upgraded) => {
+                        info!("开始TLS握手 [Host: {}]", host);
+                        // 1. 先进行TLS握手
+                        match acceptor.accept(TokioIo::new(upgraded)).await {
+                            Ok(tls_stream) => {
+                                info!("TLS握手成功 [Host: {}]", host);
+                                let io = TokioIo::new(tls_stream);
+                                let service = service_fn(|req| async move {
+                                    // 从请求头中获取 host
+                                    let new_host = req
+                                        .headers()
+                                        .get(hyper::header::HOST)
+                                        .and_then(|h| h.to_str().ok())
+                                        .unwrap_or_default()
+                                        .to_string();
 
-                                    if enable_h2 {
-                                        info!("使用 HTTP/2 服务器处理连接,{}", host);
-                                        // 使用 HTTP/2 服务器处理连接
-                                        if let Ok(_) = http2::Builder::new(TokioExecutor::new())
-                                            .serve_connection(io, service)
-                                            .await
-                                        {
-                                            info!(
-                                                "HTTP/2 连接已关闭 [RequestID: {}, Host: {}]",
-                                                request_id, host
-                                            );
-                                        } else {
-                                            error!("HTTP/2 连接失败,{}", host);
-                                        }
+                                    let is_websocket = is_websocket_upgrade(&req);
+                                    match if is_websocket {
+                                        Self::handle_websocket_connection(req, &new_host).await
                                     } else {
-                                        // 使用 HTTP/1.1 服务器处理连接
-                                        if let Ok(_) = hyper::server::conn::http1::Builder::new()
-                                            .preserve_header_case(true)
-                                            .title_case_headers(true)
-                                            // 增加超时设置
-                                            .keep_alive(true)
-                                            .half_close(true) // 允许半关闭状态
-                                            .serve_connection(io, service)
-                                            .with_upgrades()
-                                            .await
-                                        {
-                                            info!(
-                                                "HTTP/1.1 连接已关闭 [RequestID: {}, Host: {}]",
-                                                request_id, host
-                                            );
-                                        } else {
-                                            error!("HTTP/1.1 连接失败,{}", host);
-                                        }
+                                        HttpsInterceptor::handle_http_request(req, &new_host).await
+                                    } {
+                                        Ok(response) => Ok::<_, hyper::Error>(response),
+                                        Err(e) => Ok(Self::build_502_error(&format!(
+                                            "{} Bad Gateway: {}",
+                                            new_host,
+                                            e.to_string()
+                                        ))),
                                     }
-                                }
-                                Err(e) => {
-                                    error!("TLS 握手失败: {}", e);
+                                });
+
+                                if let Err(e) = hyper::server::conn::http1::Builder::new()
+                                    .preserve_header_case(true)
+                                    .title_case_headers(true)
+                                    .serve_connection(io, service)
+                                    .with_upgrades()
+                                    .await
+                                {
+                                    error!("HTTP连接处理失败 [Host: {}]: ", e);
                                 }
                             }
-                        }
-                        Err(e) => {
-                            error!("连接升级失败: {}", e);
+                            Err(e) => error!("TLS握手失败 [Host: {}]: {}", host, e),
                         }
                     }
-                });
-                // 首先返回200 Connection Established
-                Ok(Some(
-                    Response::builder()
-                        .status(200)
-                        .header("Connection", "keep-alive")
-                        .header("Proxy-Connection", "keep-alive")
-                        .body(Empty::new().map_err(|never| match never {}).boxed())
-                        .unwrap(),
-                ))
-            } else {
-                error!("无法连接到目标服务器 [Host: {}]", host);
-                Ok(Some(Self::build_502_error(&format!(
-                    "无法连接到目标服务器: {}",
-                    host
-                ))))
-            }
+                    Err(e) => error!("连接升级失败 [Host: {}]: {}", host, e.to_string()),
+                }
+            });
+            // 返回200, 表示连接成功, 并保持连接, 允许客户端继续发送数据
+            Ok(Some(
+                Response::builder()
+                    .status(200)
+                    .header("Connection", "keep-alive")
+                    .header("Proxy-Connection", "keep-alive")
+                    .body(Empty::new().map_err(|never| match never {}).boxed())
+                    .unwrap(),
+            ))
         } else {
-            // 直接转发模式
+            // 直接转发模式，不进行TLS握手
             Ok(Some(
                 Self::handle_tunnel_proxy(request_id, req, addr, host).await?,
             ))
         }
     }
-    async fn handle_request(
+    async fn handle_http_request(
         req: Request<Incoming>,
+        host: &String,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-        // 检查是否为 WebSocket 升级请求
-        if is_websocket_upgrade(&req) {
-            info!("WebSocket 升级请求 {}", req.uri());
-            return handle_websocket_upgrade(req).await;
-        }
-
         let https = HttpsConnector::new();
         let client = Client::builder(TokioExecutor::new())
             .http1_title_case_headers(true)
@@ -549,11 +641,11 @@ impl HttpsInterceptor {
 
         match client.request(new_req).await {
             Ok(response) => {
-                info!("与远程服务器使用的协议版本: {:?}", response.version());
+                info!("请求转发成功 [Host: {}]", host);
                 Ok(response.map(|b| b.boxed()))
             }
             Err(e) => {
-                error!("请求转发失败: {}", e);
+                error!("请求转发失败 [Host: {}] ,错误: {}", host, e);
                 Ok(Response::builder()
                     .status(502)
                     .body(
@@ -567,9 +659,10 @@ impl HttpsInterceptor {
     }
 }
 
-// 新增辅助函数
+// 判断是否为WebSocket升级请求
 fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
-    req.headers()
+    let is_upgrade = req
+        .headers()
         .get(hyper::header::UPGRADE)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_lowercase().contains("websocket"))
@@ -579,132 +672,7 @@ fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
             .get(hyper::header::CONNECTION)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_lowercase().contains("upgrade"))
-            .unwrap_or(false)
-}
+            .unwrap_or(false);
 
-async fn handle_websocket_upgrade(
-    req: Request<Incoming>,
-) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-    let https = HttpsConnector::new();
-    let client = Client::builder(TokioExecutor::new())
-        .http1_title_case_headers(true)
-        .http1_preserve_header_case(true)
-        .build::<_, Incoming>(https);
-
-    let uri_string = if req.uri().scheme().is_none() {
-        let host = req
-            .headers()
-            .get(hyper::header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("localhost");
-        format!(
-            "wss://{}{}",
-            host,
-            req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("")
-        )
-    } else {
-        req.uri().to_string().replace("https://", "wss://")
-    };
-
-    // 创建升级响应
-    let mut builder = Response::builder()
-        .status(hyper::StatusCode::SWITCHING_PROTOCOLS)
-        .header(hyper::header::CONNECTION, "Upgrade")
-        .header(hyper::header::UPGRADE, "websocket");
-
-    // 复制必要的 WebSocket 头
-    for (name, value) in req.headers() {
-        if name == hyper::header::SEC_WEBSOCKET_KEY
-            || name == hyper::header::SEC_WEBSOCKET_PROTOCOL
-            || name == hyper::header::SEC_WEBSOCKET_VERSION
-        {
-            builder = builder.header(name, value);
-        }
-    }
-
-    // 在这里启动一个新的任务来处理 WebSocket 连接
-    tokio::spawn(async move {
-        if let Ok(upgraded) = hyper::upgrade::on(req).await {
-            // 在这里处理 WebSocket 连接
-            if let Err(e) = handle_websocket_connection(upgraded, &uri_string).await {
-                error!("WebSocket 连接处理失败: {}", e);
-            }
-        }
-    });
-
-    // 确保返回的响应是正确的
-    Ok(builder
-        .body(Empty::new().map_err(|never| match never {}).boxed())
-        .unwrap())
-}
-
-// 新增：处理 WebSocket 连接的函数
-async fn handle_websocket_connection(
-    upgraded: hyper::upgrade::Upgraded,
-    target_uri: &str,
-) -> Result<()> {
-    // 将 HTTP 连接转换为 WebSocket 流
-    let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
-        TokioIo::new(upgraded),
-        tokio_tungstenite::tungstenite::protocol::Role::Server,
-        None,
-    )
-    .await;
-
-    // 连接到目标 WebSocket 服务器
-    let (target_ws_stream, _) = connect_async(target_uri)
-        .await
-        .map_err(|e| format!("连接到目标 WebSocket 服务器失败: {}", e))?;
-
-    let (client_write, client_read) = ws_stream.split();
-    let (target_write, target_read) = target_ws_stream.split();
-
-    // 创建两个任务来处理双向数据流
-    let client_to_target = async {
-        let mut client_read = client_read;
-        let mut target_write = target_write;
-
-        while let Some(message) = client_read.next().await {
-            match message {
-                Ok(msg) => {
-                    if let Err(e) = target_write.send(msg).await {
-                        error!("发送消息到目标服务器失败: {}", e);
-                        break;
-                    }
-                }
-                Err(e) => {
-                    error!("从客户端读取消息失败: {}", e);
-                    break;
-                }
-            }
-        }
-    };
-
-    let target_to_client = async {
-        let mut target_read = target_read;
-        let mut client_write = client_write;
-
-        while let Some(message) = target_read.next().await {
-            match message {
-                Ok(msg) => {
-                    if let Err(e) = client_write.send(msg).await {
-                        error!("发送消息到客户端失败: {}", e);
-                        break;
-                    }
-                }
-                Err(e) => {
-                    error!("从目标服务器读取消息失败: {}", e);
-                    break;
-                }
-            }
-        }
-    };
-
-    // 同时运行两个数据流处理任务
-    tokio::select! {
-        _ = client_to_target => {},
-        _ = target_to_client => {},
-    }
-
-    Ok(())
+    is_upgrade
 }

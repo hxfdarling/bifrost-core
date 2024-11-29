@@ -13,6 +13,10 @@
       },
       "args": [],
       "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "RUST_LOG": "debug"
+      },
       "program": "${cargo:program}",
       "sourceLanguages": ["rust"]
     }
