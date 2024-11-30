@@ -1,6 +1,7 @@
 mod context;
 mod https_interceptor;
 mod plugin;
+mod websocket;
 
 use bytes::Bytes;
 use clap::Parser;
