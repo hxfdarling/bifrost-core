@@ -18,6 +18,7 @@ use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
 use log::{error, info};
 
+use crate::websocket::Websocket;
 use plugin::PluginManager;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::convert::Infallible;
@@ -27,7 +28,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
-
 /// 命令行参数结构
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -101,6 +101,21 @@ impl ProxyServer {
             .map(|h| h.to_lowercase().contains("websocket"))
             .unwrap_or(false);
 
+        // 如果是 WebSocket 升级请求，使用专门的处理函数
+        if is_ws_upgrade {
+            let host = req.uri().host().unwrap_or("").to_string();
+            return match Websocket::handle_websocket_connection(req, &host).await {
+                Ok(response) => Ok(response),
+                Err(e) => {
+                    error!("WebSocket 升级失败: {}", e);
+                    let body = Full::from(format!("WebSocket upgrade failed: {}", e))
+                        .map_err(|never| match never {})
+                        .boxed();
+                    Ok(Response::builder().status(400).body(body).unwrap())
+                }
+            };
+        }
+
         // 处理请求，如果插件返回 false，表示不继续处理
         match PluginManager::global()
             .handle_request(request_id, &mut req)
@@ -146,11 +161,6 @@ impl ProxyServer {
 
         match client.request(req).await {
             Ok(mut response) => {
-                // 如果是 WebSocket 升级响应，直接返回
-                if is_ws_upgrade && response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
-                    return Ok(response.map(|b| b.boxed()));
-                }
-
                 if let Err(e) = PluginManager::global()
                     .handle_response(request_id, &req_clone, &mut response)
                     .await

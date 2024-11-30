@@ -86,11 +86,7 @@ impl Websocket {
         }
     }
     // 处理 WebSocket 连接升级和消息转发
-    pub async fn handle_websocket_upgrade(
-        req: Request<Incoming>,
-        target_uri: String,
-        host: String,
-    ) {
+    async fn handle_websocket_upgrade(req: Request<Incoming>, target_uri: String, host: String) {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
                 let ws_config =
