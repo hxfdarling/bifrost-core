@@ -217,7 +217,7 @@ async fn main() {
     );
 
     // 如果启用 HTTPS 劫持，加载证书和密钥
-    let (root_cert, root_key) = if args.enable_https {
+    if args.enable_https {
         info!("启用HTTPS流量劫持");
         if args.enable_h2 {
             info!("启用 HTTP/2 支持");
@@ -226,13 +226,9 @@ async fn main() {
         let cert = fs::read(&cert_path).expect("无法读取根证书");
         let key = fs::read(&key_path).expect("无法读取密钥文件");
 
-        let root_cert = CertificateDer::from(cert);
-        let root_key = PrivateKeyDer::from(rustls::pki_types::PrivatePkcs8KeyDer::from(key));
-
-        (Some(root_cert), Some(root_key))
-    } else {
-        (None, None)
-    };
+        let _cert = CertificateDer::from(cert);
+        let _key = PrivateKeyDer::from(rustls::pki_types::PrivatePkcs8KeyDer::from(key));
+    }
 
     PluginManager::init();
 
