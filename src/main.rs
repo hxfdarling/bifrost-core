@@ -68,19 +68,21 @@ impl ProxyServer {
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
         let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-
-        // 添加 .await 并将 Option 转换为 Response
-        Ok(self
-            .https_interceptor
-            .handle_connect(request_id, req)
-            .await
-            .unwrap()
-            .unwrap_or_else(|| {
-                Response::builder()
-                    .status(500)
-                    .body(Empty::new().map_err(|never| match never {}).boxed())
-                    .unwrap()
-            }))
+        let error_response = Response::builder()
+            .status(500)
+            .body(Empty::new().map_err(|never| match never {}).boxed())
+            .unwrap();
+        // 添加错误日志
+        match self.https_interceptor.handle_connect(request_id, req).await {
+            Ok(response_option) => Ok(response_option.unwrap_or_else(|| {
+                error!("CONNECT请求处理失败: handle_connect 返回 None");
+                error_response
+            })),
+            Err(e) => {
+                error!("CONNECT请求处理失败: {}", e);
+                Ok(error_response)
+            }
+        }
     }
 
     // 新增 handle_http 函数
@@ -259,7 +261,7 @@ async fn main() {
                 .with_upgrades()
                 .await
             {
-                error!("服器错误: {}", err);
+                error!("服务器连接错误: {:?}, 错误类型: {}", err, err.to_string());
             }
         });
     }
