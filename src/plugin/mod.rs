@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
-use hyper::body::{Body, Incoming};
+use hyper::body::Incoming;
 use hyper::{Request, Response};
 use once_cell::sync::OnceCell;
 
@@ -11,7 +11,6 @@ use crate::plugin::net_storage::NetStorage;
 use crate::plugin::traffic_stats::TrafficStatsPlugin;
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
 
 pub mod bifrost_server;
 

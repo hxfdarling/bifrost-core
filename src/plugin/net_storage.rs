@@ -8,7 +8,7 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, SystemTime};
 
 const MAX_BODY_SIZE: usize = 2 * 1024 * 1024; // 2MB

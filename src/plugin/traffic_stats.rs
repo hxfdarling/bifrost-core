@@ -1,16 +1,14 @@
-use crate::context::{Context, TrafficStatsData};
+use crate::context::Context;
 use crate::plugin::DataDirection;
 use crate::plugin::Plugin;
 use async_trait::async_trait;
 use bytes::Bytes;
-use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use http_body_util::combinators::BoxBody;
 use hyper::body::Incoming;
 use hyper::{Request, Response};
 use log::info;
 use std::error::Error;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::Ordering;
 use tokio;
 
 #[derive(Debug)]

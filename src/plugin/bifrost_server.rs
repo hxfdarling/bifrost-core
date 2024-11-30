@@ -6,10 +6,10 @@ use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
-use log::{info, warn};
+use log::info;
 use serde_json::{json, Value};
 use std::error::Error;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 type HandlerResult = Result<Value, Box<dyn Error + Send + Sync>>;
 
