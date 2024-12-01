@@ -212,8 +212,6 @@ impl Plugin for BifrostServerPlugin {
     {
         let port = Store::global().get_config().await.port;
         let target_host = Self::get_host(req);
-        info!("Original target: {}", target_host);
-
         if Self::is_bifrost_host(&target_host, port) {
             info!("Request handled by Bifrost Server");
             let response = self.host_server(req).await?;

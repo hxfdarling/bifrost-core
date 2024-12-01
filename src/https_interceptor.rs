@@ -23,6 +23,7 @@ use tokio::sync::RwLock;
 use tokio_rustls::TlsAcceptor;
 type Result<T, E = Box<dyn Error + Send + Sync>> = std::result::Result<T, E>;
 use hyper::service::service_fn;
+use hyper_util::rt::TokioExecutor;
 use openssl::asn1::Asn1Time;
 use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
@@ -251,30 +252,36 @@ impl HttpsInterceptor {
                         match acceptor.accept(TokioIo::new(upgraded)).await {
                             Ok(tls_stream) => {
                                 info!("TLS握手成功 [Host: {}]", host);
+                                // 获取协商的ALPN协议
+                                let negotiated_protocol = tls_stream.get_ref().1.alpn_protocol();
+                                let use_h2 = negotiated_protocol.map_or(false, |p| p == b"h2");
+
                                 let io = TokioIo::new(tls_stream);
                                 let service = service_fn(|req| async move {
-                                    let is_websocket = Websocket::is_websocket_upgrade(&req);
-                                    match if is_websocket {
-                                        Websocket::handle_websocket(req).await
-                                    } else {
-                                        HttpInterceptor::handle_http(req).await
-                                    } {
-                                        Ok(response) => Ok::<_, hyper::Error>(response),
-                                        Err(e) => Ok(Self::build_502_error(&format!(
-                                            "Bad Gateway: {}",
-                                            e.to_string()
-                                        ))),
-                                    }
+                                    HttpInterceptor::handle_http(req).await
                                 });
 
-                                if let Err(e) = hyper::server::conn::http1::Builder::new()
-                                    .preserve_header_case(true)
-                                    .title_case_headers(true)
+                                if use_h2 {
+                                    // 使用HTTP/2处理连接
+                                    if let Err(e) = hyper::server::conn::http2::Builder::new(
+                                        TokioExecutor::new(),
+                                    )
                                     .serve_connection(io, service)
-                                    .with_upgrades()
                                     .await
-                                {
-                                    error!("HTTP连接处理失败 [Host: {}]: {:?}", host, e);
+                                    {
+                                        error!("HTTP/2连接处理失败 [Host: {}]: {:?}", host, e);
+                                    }
+                                } else {
+                                    // 使用HTTP/1.1处理连接
+                                    if let Err(e) = hyper::server::conn::http1::Builder::new()
+                                        .preserve_header_case(true)
+                                        .title_case_headers(true)
+                                        .serve_connection(io, service)
+                                        .with_upgrades()
+                                        .await
+                                    {
+                                        error!("HTTP/1.1连接处理失败 [Host: {}]: {:?}", host, e);
+                                    }
                                 }
                             }
                             Err(e) => error!("TLS握手失败 [Host: {}]: {:?}", host, e),

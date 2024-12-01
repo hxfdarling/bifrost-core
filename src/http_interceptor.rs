@@ -5,14 +5,16 @@ use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use log::{error, info};
+use std::convert::Infallible;
 use std::error::Error;
 
 use std::time::Duration;
 
 use hyper_util::rt::TokioExecutor;
 
-use crate::store::REQUEST_ID_COUNTER;
 use crate::plugin::PluginManager;
+use crate::store::REQUEST_ID_COUNTER;
+use crate::websocket_interceptor::Websocket;
 use std::sync::atomic::Ordering;
 
 type Result<T, E = Box<dyn Error + Send + Sync>> = std::result::Result<T, E>;
@@ -31,8 +33,35 @@ impl HttpInterceptor {
             )
             .unwrap()
     }
-
     pub async fn handle_http(
+        req: Request<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
+        // 检查是否为 WebSocket 升级请求
+        if Websocket::is_websocket_upgrade(&req) {
+            return match Websocket::handle_websocket(req).await {
+                Ok(response) => Ok(response),
+                Err(e) => {
+                    error!("WebSocket 升级失败: {}", e);
+                    let body = Full::from(Bytes::from("WebSocket upgrade failed"))
+                        .map_err(|never| match never {})
+                        .boxed();
+                    Ok(Response::builder().status(400).body(body).unwrap())
+                }
+            };
+        }
+        match HttpInterceptor::http_request(req).await {
+            Ok(response) => Ok(response),
+            Err(e) => {
+                error!("HTTP请求处理失败: {}", e);
+                let body = Full::from(Bytes::from("Internal Server Error"))
+                    .map_err(|never| match never {})
+                    .boxed();
+                Ok(Response::builder().status(500).body(body).unwrap())
+            }
+        }
+    }
+
+    pub async fn http_request(
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         // 从请求头中获取 host

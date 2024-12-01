@@ -40,7 +40,7 @@ struct Args {
     enable_https: bool,
 
     /// 是否启用 HTTP/2 支持
-    #[arg(long = "h2", help = "启用 HTTP/2 支持")]
+    #[arg(long = "h2", help = "启用 HTTP/2 支持", default_value_t = false)]
     enable_h2: bool,
 
     /// 最大网络记录数量
@@ -77,34 +77,6 @@ impl ProxyServer {
             }
         }
     }
-    async fn handle_http(
-        &self,
-        req: Request<Incoming>,
-    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
-        // 检查是否为 WebSocket 升级请求
-        if Websocket::is_websocket_upgrade(&req) {
-            return match Websocket::handle_websocket(req).await {
-                Ok(response) => Ok(response),
-                Err(e) => {
-                    error!("WebSocket 升级失败: {}", e);
-                    let body = Full::from(Bytes::from("WebSocket upgrade failed"))
-                        .map_err(|never| match never {})
-                        .boxed();
-                    Ok(Response::builder().status(400).body(body).unwrap())
-                }
-            };
-        }
-        match HttpInterceptor::handle_http(req).await {
-            Ok(response) => Ok(response),
-            Err(e) => {
-                error!("HTTP请求处理失败: {}", e);
-                let body = Full::from(Bytes::from("Internal Server Error"))
-                    .map_err(|never| match never {})
-                    .boxed();
-                Ok(Response::builder().status(500).body(body).unwrap())
-            }
-        }
-    }
 
     // 修改后的 proxy_handler 函数
     async fn proxy_handler(
@@ -113,7 +85,7 @@ impl ProxyServer {
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
         match *req.method() {
             Method::CONNECT => self.handle_connect(req).await,
-            _ => self.handle_http(req).await,
+            _ => HttpInterceptor::handle_http(req).await,
         }
     }
 }
