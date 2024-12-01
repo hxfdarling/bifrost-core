@@ -17,6 +17,23 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 pub struct Websocket {}
 
 impl Websocket {
+    // 判断是否为WebSocket升级请求
+    pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
+        let is_upgrade = req
+            .headers()
+            .get(hyper::header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_lowercase().contains("websocket"))
+            .unwrap_or(false)
+            && req
+                .headers()
+                .get(hyper::header::CONNECTION)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_lowercase().contains("upgrade"))
+                .unwrap_or(false);
+
+        is_upgrade
+    }
     // WebSocket升处理
     pub async fn handle_websocket_connection(
         req: Request<Incoming>,

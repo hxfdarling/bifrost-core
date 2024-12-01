@@ -1,7 +1,8 @@
 mod context;
 mod https_interceptor;
 mod plugin;
-mod websocket;
+mod tunnel_interceptor;
+mod websocket_interceptor;
 
 use bytes::Bytes;
 use clap::Parser;
@@ -18,7 +19,7 @@ use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
 use log::{error, info};
 
-use crate::websocket::Websocket;
+use crate::websocket_interceptor::Websocket;
 use plugin::PluginManager;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::convert::Infallible;
@@ -93,16 +94,8 @@ impl ProxyServer {
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
         let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
 
-        // 检查是否为 WebSocket 升级请求
-        let is_ws_upgrade = req
-            .headers()
-            .get(hyper::header::UPGRADE)
-            .and_then(|h| h.to_str().ok())
-            .map(|h| h.to_lowercase().contains("websocket"))
-            .unwrap_or(false);
-
         // 如果是 WebSocket 升级请求，使用专门的处理函数
-        if is_ws_upgrade {
+        if Websocket::is_websocket_upgrade(&req) {
             let host = req.uri().host().unwrap_or("").to_string();
             return match Websocket::handle_websocket_connection(req, &host).await {
                 Ok(response) => Ok(response),
