@@ -64,13 +64,28 @@ impl HttpInterceptor {
     pub async fn http_request(
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-        // 从请求头中获取 host
-        let host = req
-            .headers()
-            .get(hyper::header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
+        // 从请求头中获取 host，HTTP/2 中 :authority 伪头部字段替代了 Host 头
+        let host = if req.version() == hyper::Version::HTTP_2 {
+            // 对于 HTTP/2，首先尝试从 :authority 伪头部获取
+            req.uri()
+                .authority()
+                .map(|a| a.to_string())
+                .or_else(|| {
+                    req.headers()
+                        .get(":authority")
+                        .and_then(|h| h.to_str().ok())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or("localhost".to_string())
+        } else {
+            // HTTP/1.1 继续使用 Host 头
+            req.headers()
+                .get(hyper::header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("localhost")
+                .to_string()
+        };
+
         let https = HttpsConnector::new();
         let client = Client::builder(TokioExecutor::new())
             .http1_title_case_headers(true)
@@ -83,14 +98,7 @@ impl HttpInterceptor {
 
         // 构建新的URI，确保使用绝对路径
         let uri_string = if req.uri().scheme().is_none() {
-            // 从Host头获取主机名
-            let host = req
-                .headers()
-                .get(hyper::header::HOST)
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or("localhost");
-
-            // 构建完整的URL
+            // 使用之前获取的 host
             format!(
                 "https://{}{}",
                 host,
