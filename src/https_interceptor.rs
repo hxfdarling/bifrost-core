@@ -1,4 +1,5 @@
 use crate::context::Context;
+use crate::http_interceptor::HttpInterceptor;
 use crate::tunnel_interceptor::TunnelInterceptor;
 use crate::websocket_interceptor::Websocket;
 use bytes::Bytes;
@@ -264,7 +265,7 @@ impl HttpsInterceptor {
                                     match if is_websocket {
                                         Websocket::handle_websocket_connection(req, &new_host).await
                                     } else {
-                                        HttpsInterceptor::handle_http_request(req, &new_host).await
+                                        HttpInterceptor::handle_http_request(req, &new_host).await
                                     } {
                                         Ok(response) => Ok::<_, hyper::Error>(response),
                                         Err(e) => Ok(Self::build_502_error(&format!(
@@ -305,69 +306,6 @@ impl HttpsInterceptor {
             Ok(Some(
                 TunnelInterceptor::handle_tunnel_proxy(request_id, req, addr, host).await?,
             ))
-        }
-    }
-    async fn handle_http_request(
-        req: Request<Incoming>,
-        host: &String,
-    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-        let https = HttpsConnector::new();
-        let client = Client::builder(TokioExecutor::new())
-            .http1_title_case_headers(true)
-            .http1_preserve_header_case(true)
-            .http2_keep_alive_interval(Duration::from_secs(30))
-            .http2_keep_alive_timeout(Duration::from_secs(20))
-            .http2_adaptive_window(true)
-            .set_host(true)
-            .build::<_, Incoming>(https);
-
-        // 构建新的URI，确保使用绝对路径
-        let uri_string = if req.uri().scheme().is_none() {
-            // 从Host头获取主机名
-            let host = req
-                .headers()
-                .get(hyper::header::HOST)
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or("localhost");
-
-            // 构建完整的URL
-            format!(
-                "https://{}{}",
-                host,
-                req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("")
-            )
-        } else {
-            req.uri().to_string()
-        };
-
-        // 构建新请求
-        let mut builder = Request::builder().method(req.method()).uri(uri_string);
-
-        // 复制所有请求头
-        for (name, value) in req.headers() {
-            builder = builder.header(name, value);
-        }
-
-        let new_req = builder
-            .body(req.into_body())
-            .map_err(|e| format!("构建请求失败: {}", e))?;
-
-        match client.request(new_req).await {
-            Ok(response) => {
-                info!("请求转发成功 [Host: {}]", host);
-                Ok(response.map(|b| b.boxed()))
-            }
-            Err(e) => {
-                error!("请求转发失败 [Host: {}] ,错误: {}", host, e);
-                Ok(Response::builder()
-                    .status(502)
-                    .body(
-                        Full::new(Bytes::from(format!("Bad Gateway: {}", e)))
-                            .map_err(|never| match never {})
-                            .boxed(),
-                    )
-                    .unwrap())
-            }
         }
     }
 }

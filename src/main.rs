@@ -1,4 +1,5 @@
 mod context;
+mod http_interceptor;
 mod https_interceptor;
 mod plugin;
 mod tunnel_interceptor;
