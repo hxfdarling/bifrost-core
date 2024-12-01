@@ -1,6 +1,6 @@
 use super::DataDirection;
-use crate::context::Context;
 use crate::plugin::Plugin;
+use crate::store::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
@@ -91,7 +91,7 @@ impl BifrostServerPlugin {
     }
 
     async fn handle_config(_req: &Request<Incoming>) -> HandlerResult {
-        let config = Context::global().get_config().await;
+        let config = Store::global().get_config().await;
         Ok(json!({
             "port": config.port,
             "cert_path": config.cert_path.to_string_lossy(),
@@ -101,7 +101,7 @@ impl BifrostServerPlugin {
     }
 
     async fn handle_get_record(_req: &Request<Incoming>) -> HandlerResult {
-        let context = Context::global();
+        let context = Store::global();
         let records = context.get_network_records().await;
 
         // 获取最新的10条记录并过滤body内容
@@ -123,7 +123,7 @@ impl BifrostServerPlugin {
     }
 
     async fn handle_traffic_stats(_req: &Request<Incoming>) -> HandlerResult {
-        let context = Context::global();
+        let context = Store::global();
         let stats = context.get_traffic_stats();
         let stats = stats.as_ref();
 
@@ -210,7 +210,7 @@ impl Plugin for BifrostServerPlugin {
         req: &mut Request<Incoming>,
     ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
     {
-        let port = Context::global().get_config().await.port;
+        let port = Store::global().get_config().await.port;
         let target_host = Self::get_host(req);
         info!("Original target: {}", target_host);
 
@@ -229,7 +229,7 @@ impl Plugin for BifrostServerPlugin {
         req: &Request<()>,
         _resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
-        let port = Context::global().get_config().await.port;
+        let port = Store::global().get_config().await.port;
         let target_host = Self::get_host(req);
 
         if Self::is_bifrost_host(&target_host, port) {

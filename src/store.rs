@@ -6,8 +6,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-static GLOBAL_CONTEXT: OnceCell<Context> = OnceCell::new();
-
+static GLOBAL_CONTEXT: OnceCell<Store> = OnceCell::new();
+// 添加请求ID计数器
+pub static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 pub struct TrafficStatsData {
     pub bytes_in: AtomicU64,
@@ -56,7 +57,7 @@ impl TrafficStatsData {
 }
 
 #[derive(Clone, Debug)]
-pub struct Context {
+pub struct Store {
     config: Arc<RwLock<Config>>,
     network_records: Arc<RwLock<VecDeque<NetworkRecord>>>,
     traffic_stats: Arc<TrafficStatsData>,
@@ -72,7 +73,7 @@ pub struct Config {
     pub max_network_records: usize,
 }
 
-impl Context {
+impl Store {
     pub fn init(
         port: u16,
         cert_path: PathBuf,
@@ -95,7 +96,7 @@ impl Context {
         });
     }
 
-    pub fn global() -> &'static Context {
+    pub fn global() -> &'static Store {
         GLOBAL_CONTEXT.get().expect("Context not initialized")
     }
 

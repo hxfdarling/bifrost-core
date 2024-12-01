@@ -11,6 +11,10 @@ use std::time::Duration;
 
 use hyper_util::rt::TokioExecutor;
 
+use crate::store::REQUEST_ID_COUNTER;
+use crate::plugin::PluginManager;
+use std::sync::atomic::Ordering;
+
 type Result<T, E = Box<dyn Error + Send + Sync>> = std::result::Result<T, E>;
 #[derive(Clone)]
 pub struct HttpInterceptor {}
@@ -28,10 +32,16 @@ impl HttpInterceptor {
             .unwrap()
     }
 
-    pub async fn handle_http_request(
+    pub async fn handle_http(
         req: Request<Incoming>,
-        host: &String,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        // 从请求头中获取 host
+        let host = req
+            .headers()
+            .get(hyper::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
         let https = HttpsConnector::new();
         let client = Client::builder(TokioExecutor::new())
             .http1_title_case_headers(true)
@@ -68,11 +78,35 @@ impl HttpInterceptor {
         for (name, value) in req.headers() {
             builder = builder.header(name, value);
         }
+        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
 
         let new_req = builder
             .body(req.into_body())
             .map_err(|e| format!("构建请求失败: {}", e))?;
-
+        // 处理请求，如果插件返回 false，表示不继续处理
+        let mut new_req = new_req;
+        match PluginManager::global()
+            .handle_request(request_id, &mut new_req)
+            .await
+        {
+            Ok((false, Some(response))) => {
+                return Ok(response);
+            }
+            Ok((false, None)) => {
+                let body = Full::from(Bytes::from("Bad Plugin Response"))
+                    .map_err(|never| match never {})
+                    .boxed();
+                return Ok(Response::builder().status(400).body(body).unwrap());
+            }
+            Ok((true, _)) => (), // 继续处理
+            Err(e) => {
+                error!("插件处理请求失败: {}", e);
+                let body = Full::from(Bytes::from("Internal Server Error"))
+                    .map_err(|never| match never {})
+                    .boxed();
+                return Ok(Response::builder().status(500).body(body).unwrap());
+            }
+        }
         match client.request(new_req).await {
             Ok(response) => {
                 info!("请求转发成功 [Host: {}]", host);

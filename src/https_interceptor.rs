@@ -1,5 +1,5 @@
-use crate::context::Context;
 use crate::http_interceptor::HttpInterceptor;
+use crate::store::{Store, REQUEST_ID_COUNTER};
 use crate::tunnel_interceptor::TunnelInterceptor;
 use crate::websocket_interceptor::Websocket;
 use bytes::Bytes;
@@ -14,6 +14,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -22,7 +23,6 @@ use tokio::sync::RwLock;
 use tokio_rustls::TlsAcceptor;
 type Result<T, E = Box<dyn Error + Send + Sync>> = std::result::Result<T, E>;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioExecutor;
 use openssl::asn1::Asn1Time;
 use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
@@ -49,7 +49,7 @@ impl HttpsInterceptor {
     }
     // 生成证书
     async fn generate_cert(&self, domain: &str) -> Result<CachedCert> {
-        let config = Context::global().get_config().await;
+        let config = Store::global().get_config().await;
         let cert_path = &config.cert_path;
         let key_path = &config.key_path;
 
@@ -191,10 +191,10 @@ impl HttpsInterceptor {
 
     pub async fn handle_connect(
         &self,
-        request_id: u64,
         req: Request<Incoming>,
     ) -> Result<Option<Response<BoxBody<Bytes, hyper::Error>>>> {
-        let config = Context::global().get_config().await;
+        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let config = Store::global().get_config().await;
         // 先获取所有需要的信息
         let auth_str = req
             .uri()
@@ -253,24 +253,15 @@ impl HttpsInterceptor {
                                 info!("TLS握手成功 [Host: {}]", host);
                                 let io = TokioIo::new(tls_stream);
                                 let service = service_fn(|req| async move {
-                                    // 从请求头中获取 host
-                                    let new_host = req
-                                        .headers()
-                                        .get(hyper::header::HOST)
-                                        .and_then(|h| h.to_str().ok())
-                                        .unwrap_or_default()
-                                        .to_string();
-
                                     let is_websocket = Websocket::is_websocket_upgrade(&req);
                                     match if is_websocket {
-                                        Websocket::handle_websocket_connection(req, &new_host).await
+                                        Websocket::handle_websocket(req).await
                                     } else {
-                                        HttpInterceptor::handle_http_request(req, &new_host).await
+                                        HttpInterceptor::handle_http(req).await
                                     } {
                                         Ok(response) => Ok::<_, hyper::Error>(response),
                                         Err(e) => Ok(Self::build_502_error(&format!(
-                                            "{} Bad Gateway: {}",
-                                            new_host,
+                                            "Bad Gateway: {}",
                                             e.to_string()
                                         ))),
                                     }

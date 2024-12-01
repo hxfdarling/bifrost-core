@@ -1,5 +1,5 @@
-use crate::context::Context;
 use crate::plugin::{DataDirection, Plugin};
+use crate::store::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
@@ -140,10 +140,10 @@ impl Plugin for NetStorage {
             state: RequestState::Connecting,
         };
 
-        Context::global().add_network_record(record).await;
+        Store::global().add_network_record(record).await;
 
         // 更新状态为发送中
-        Context::global()
+        Store::global()
             .update_network_record_by_id(request_id, |record| {
                 record.state = RequestState::Sending;
             })
@@ -178,7 +178,7 @@ impl Plugin for NetStorage {
         }
         response_size += 2; // 响应头结束的空行 \r\n
 
-        Context::global()
+        Store::global()
             .update_network_record_by_id(request_id, |record| {
                 record.state = RequestState::Receiving;
                 record.status_code = Some(resp.status().as_u16());
@@ -221,7 +221,7 @@ impl Plugin for NetStorage {
         addr: &str,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         // 连接关闭时，如果状态不是 Completed，则标记为 Cancelled
-        Context::global()
+        Store::global()
             .update_network_record_by_id(request_id, |record| {
                 if !matches!(record.state, RequestState::Completed) {
                     record.state = RequestState::Cancelled;
@@ -238,7 +238,7 @@ impl Plugin for NetStorage {
         direction: DataDirection,
         data: &[u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Context::global()
+        Store::global()
             .update_network_record_by_id(request_id, |record| {
                 match direction {
                     DataDirection::Upstream => {

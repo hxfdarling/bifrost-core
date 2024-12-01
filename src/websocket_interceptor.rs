@@ -35,10 +35,16 @@ impl Websocket {
         is_upgrade
     }
     // WebSocket升处理
-    pub async fn handle_websocket_connection(
+    pub async fn handle_websocket(
         req: Request<Incoming>,
-        host: &String,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        // 从请求头中获取 host
+        let host = req
+            .headers()
+            .get(hyper::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
         info!("处理 WebSocket 升级请求 [Host: {}]", host);
 
         // 构建目标 URI
@@ -48,7 +54,7 @@ impl Websocket {
                 req.headers()
                     .get(hyper::header::HOST)
                     .and_then(|h| h.to_str().ok())
-                    .unwrap_or(host),
+                    .unwrap_or(&host),
                 req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("")
             )
         } else {

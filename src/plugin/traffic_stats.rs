@@ -1,6 +1,6 @@
-use crate::context::Context;
 use crate::plugin::DataDirection;
 use crate::plugin::Plugin;
+use crate::store::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
@@ -22,7 +22,7 @@ impl TrafficStatsPlugin {
             let mut last_bytes_out: u64 = 0;
 
             loop {
-                let traffic_stats = Context::global().get_traffic_stats();
+                let traffic_stats = Store::global().get_traffic_stats();
 
                 // 计算网速
                 let current_bytes_in = traffic_stats.bytes_in.load(Ordering::Relaxed);
@@ -79,7 +79,7 @@ impl TrafficStatsPlugin {
     pub fn start_stats_printer() {
         tokio::spawn(async move {
             loop {
-                let traffic_stats = Context::global().get_traffic_stats();
+                let traffic_stats = Store::global().get_traffic_stats();
                 let stats = traffic_stats.as_ref();
                 info!(
                     "流量统计 - 入站: {:.2} MB ({:.2} MB/s, 峰值: {:.2} MB/s), 出站: {:.2} MB ({:.2} MB/s, 峰值: {:.2} MB/s), 请求: {} (总量: {}), QPS: {} (峰值: {})",
@@ -108,7 +108,7 @@ impl Plugin for TrafficStatsPlugin {
         _req: &mut Request<Incoming>,
     ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
     {
-        let stats = Context::global().get_traffic_stats();
+        let stats = Store::global().get_traffic_stats();
         stats.total_requests.fetch_add(1, Ordering::Relaxed);
         stats.current_requests.fetch_add(1, Ordering::Relaxed);
         stats.requests_this_second.fetch_add(1, Ordering::Relaxed);
@@ -122,7 +122,7 @@ impl Plugin for TrafficStatsPlugin {
 
         _resp: &mut Response<Incoming>,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
-        let stats = Context::global().get_traffic_stats();
+        let stats = Store::global().get_traffic_stats();
         stats.current_requests.fetch_sub(1, Ordering::Relaxed);
         Ok(true)
     }
@@ -133,7 +133,7 @@ impl Plugin for TrafficStatsPlugin {
         req: &Request<()>,
     ) -> Result<(bool, Option<Response<BoxBody<Bytes, hyper::Error>>>), Box<dyn Error + Send + Sync>>
     {
-        let stats = Context::global().get_traffic_stats();
+        let stats = Store::global().get_traffic_stats();
         stats.total_requests.fetch_add(1, Ordering::Relaxed);
         stats.current_requests.fetch_add(1, Ordering::Relaxed);
         stats.requests_this_second.fetch_add(1, Ordering::Relaxed);
@@ -146,7 +146,7 @@ impl Plugin for TrafficStatsPlugin {
         direction: DataDirection,
         data: &[u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let stats = Context::global().get_traffic_stats();
+        let stats = Store::global().get_traffic_stats();
         match direction {
             DataDirection::Upstream => {
                 stats
@@ -167,7 +167,7 @@ impl Plugin for TrafficStatsPlugin {
         request_id: u64,
         _target: &str,
     ) -> Result<bool, Box<dyn Error + Send + Sync>> {
-        let stats = Context::global().get_traffic_stats();
+        let stats = Store::global().get_traffic_stats();
         stats.current_requests.fetch_sub(1, Ordering::Relaxed);
         Ok(true)
     }
