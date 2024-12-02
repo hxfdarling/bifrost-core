@@ -18,7 +18,7 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use log::{error, info};
 
-use crate::websocket_interceptor::Websocket;
+use plugin::traffic_stats::TrafficStatsPlugin;
 use plugin::PluginManager;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::convert::Infallible;
@@ -36,7 +36,7 @@ struct Args {
     port: u16,
 
     /// 是否启用HTTPS流量劫持
-    #[arg(long = "https", help = "启用HTTPS流量劫持", default_value_t = true)]
+    #[arg(long = "https", help = "启用HTTPS流量劫持", default_value_t = false)]
     enable_https: bool,
 
     /// 是否启用 HTTP/2 支持
@@ -68,11 +68,11 @@ impl ProxyServer {
             .unwrap();
         match self.https_interceptor.handle_connect(req).await {
             Ok(response_option) => Ok(response_option.unwrap_or_else(|| {
-                error!("CONNECT请求处理失败: handle_connect 返回 None");
+                error!("CONNECT Request Failed: handle_connect returned None");
                 error_response
             })),
             Err(e) => {
-                error!("CONNECT请求处理失败: {}", e);
+                error!("CONNECT Request Failed: {}", e);
                 Ok(error_response)
             }
         }
@@ -105,7 +105,7 @@ async fn main() {
     // 检查证书文件
     if !cert_path.exists() || !key_path.exists() {
         error!(
-            "根证书或密钥文件不存在，请检查路径: {:?}, {:?}",
+            "Root certificate or private key file does not exist, please check the path: {:?}, {:?}",
             cert_path, key_path
         );
         std::process::exit(1);
@@ -123,13 +123,13 @@ async fn main() {
 
     // 如果启用 HTTPS 劫持，加载证书和密钥
     if args.enable_https {
-        info!("启用HTTPS流量劫持");
+        info!("HTTPS Interception Enabled");
         if args.enable_h2 {
-            info!("启用 HTTP/2 支持");
+            info!("HTTP/2 Support Enabled");
         }
 
-        let cert = fs::read(&cert_path).expect("无法读取根证书");
-        let key = fs::read(&key_path).expect("无法读取密钥文件");
+        let cert = fs::read(&cert_path).expect("Failed to read root certificate");
+        let key = fs::read(&key_path).expect("Failed to read private key file");
 
         let _cert = CertificateDer::from(cert);
         let _key = PrivateKeyDer::from(rustls::pki_types::PrivatePkcs8KeyDer::from(key));
@@ -138,12 +138,12 @@ async fn main() {
     PluginManager::init();
 
     // 启动统计信息打印任务
-    // TrafficStatsPlugin::start_stats_printer();
+    TrafficStatsPlugin::start_stats_printer();
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let proxy_server = Arc::new(ProxyServer::new());
 
     let listener = TcpListener::bind(addr).await.unwrap();
-    info!("代理服务器运行在 http://{}", addr);
+    info!("Proxy Server Running on http://{}", addr);
 
     loop {
         let (stream, _) = listener.accept().await.unwrap();
@@ -163,7 +163,11 @@ async fn main() {
                 .with_upgrades()
                 .await
             {
-                error!("服务器连接错误: {:?}, 错误类型: {}", err, err.to_string());
+                error!(
+                    "Server Connection Error: {:?}, Error Type: {}",
+                    err,
+                    err.to_string()
+                );
             }
         });
     }

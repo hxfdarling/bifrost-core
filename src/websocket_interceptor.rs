@@ -45,7 +45,6 @@ impl Websocket {
             .and_then(|h| h.to_str().ok())
             .unwrap_or_default()
             .to_string();
-        info!("处理 WebSocket 升级请求 [Host: {}]", host);
 
         // 构建目标 URI
         let target_uri = if req.uri().scheme().is_none() {
@@ -60,8 +59,11 @@ impl Websocket {
         } else {
             req.uri().to_string().replace("http", "ws")
         };
-
-        info!("WebSocket 目标 URI: {}", target_uri);
+        info!(
+            "WebSocket request [Protocol: {}] [Host: {}]",
+            target_uri.split("://").next().unwrap_or(""),
+            host
+        );
 
         // 构建新的请求,保留原始请求的所有头部
         let mut request_builder = Request::builder().uri(target_uri.clone()).method("GET");
@@ -78,7 +80,7 @@ impl Websocket {
         // 使用构建好的请求发起连接
         match connect_async(request).await {
             Ok((_, response)) => {
-                info!("获取目标服务器响应头成功 [Host: {}]", host);
+                info!("WebSocket Connection Success [Host: {}]", host);
 
                 // 构建升级响应
                 let mut response_builder = Response::builder().status(response.status());
@@ -96,7 +98,7 @@ impl Websocket {
                     .unwrap())
             }
             Err(e) => {
-                error!("连接 WebSocket 服务器失败: {}", e);
+                error!("WebSocket Connection Failed [Target URI: {}]", target_uri);
                 Ok(Response::builder()
                     .status(502)
                     .body(
@@ -134,7 +136,7 @@ impl Websocket {
                                 let (mut client_write, mut client_read) = ws_stream.split();
                                 let (mut target_write, mut target_read) = target_ws_stream.split();
 
-                                info!("WebSocket 双向流建立成功 [Host: {}]", host);
+                                info!("WebSocket Connection Success [Host: {}]", host);
 
                                 // 创建两个转发任务
                                 let client_to_server = async {

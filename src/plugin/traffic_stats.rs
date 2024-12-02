@@ -82,7 +82,7 @@ impl TrafficStatsPlugin {
                 let traffic_stats = Store::global().get_traffic_stats();
                 let stats = traffic_stats.as_ref();
                 info!(
-                    "流量统计 - 入站: {:.2} MB ({:.2} MB/s, 峰值: {:.2} MB/s), 出站: {:.2} MB ({:.2} MB/s, 峰值: {:.2} MB/s), 请求: {} (总量: {}), QPS: {} (峰值: {})",
+                    "Inbound: {:.2} MB ({:.2} MB/s, Peak: {:.2} MB/s), Outbound: {:.2} MB ({:.2} MB/s, Peak: {:.2} MB/s), Requests: {} (Total: {}), QPS: {} (Peak: {})",
                     stats.bytes_in.load(Ordering::Relaxed) as f64 / 1_048_576.0,
                     stats.current_speed_in.load(Ordering::Relaxed) as f64 / 1_048_576.0,
                     stats.max_speed_in.load(Ordering::Relaxed) as f64 / 1_048_576.0,

@@ -236,22 +236,14 @@ impl HttpsInterceptor {
         };
         // HTTPS 拦截模
         if let Some(acceptor) = acceptor {
-            // 先检查目标服务器是否可达
-            if let Err(e) = TcpStream::connect(&addr).await {
-                error!("目标服务器不可达 [Host: {}]: {}", auth_str, e);
-                return Ok(Some(Self::build_502_error(&format!(
-                    "无法连接到目标服务器: {}",
-                    e
-                ))));
-            }
             tokio::spawn(async move {
                 match hyper::upgrade::on(req).await {
                     Ok(upgraded) => {
-                        info!("开始TLS握手 [Host: {}]", host);
+                        info!("TLS Handshake [Host: {}]", host);
                         // 1. 先进行TLS握手
                         match acceptor.accept(TokioIo::new(upgraded)).await {
                             Ok(tls_stream) => {
-                                info!("TLS握手成功 [Host: {}]", host);
+                                info!("TLS Handshake Success [Host: {}]", host);
                                 // 获取协商的ALPN协议
                                 let negotiated_protocol = tls_stream.get_ref().1.alpn_protocol();
                                 let use_h2 = negotiated_protocol.map_or(false, |p| p == b"h2");
@@ -269,7 +261,10 @@ impl HttpsInterceptor {
                                     .serve_connection(io, service)
                                     .await
                                     {
-                                        error!("HTTP/2连接处理失败 [Host: {}]: {:?}", host, e);
+                                        error!(
+                                            "HTTP/2 Connection Failed [Host: {}]: {:?}",
+                                            host, e
+                                        );
                                     }
                                 } else {
                                     // 使用HTTP/1.1处理连接
@@ -280,14 +275,17 @@ impl HttpsInterceptor {
                                         .with_upgrades()
                                         .await
                                     {
-                                        error!("HTTP/1.1连接处理失败 [Host: {}]: {:?}", host, e);
+                                        error!(
+                                            "HTTP/1.1 Connection Failed [Host: {}]: {:?}",
+                                            host, e
+                                        );
                                     }
                                 }
                             }
-                            Err(e) => error!("TLS握手失败 [Host: {}]: {:?}", host, e),
+                            Err(e) => error!("TLS Handshake Failed [Host: {}]: {:?}", host, e),
                         }
                     }
-                    Err(e) => error!("连接升级失败 [Host: {}]: {:?}", host, e),
+                    Err(e) => error!("Upgrade Failed [Host: {}]: {:?}", host, e),
                 }
             });
             // 返回200, 表示连接成功, 并保持连接, 允许客户端继续发送数据

@@ -44,7 +44,7 @@ impl TunnelInterceptor {
                         result = client_stream.read(&mut client_buf) => {
                             match result {
                                 Ok(0) => {
-                                    info!("客户端正常关闭连接 [RequestID: {}, Host: {}]", request_id, host);
+                                    info!("Client Connection Closed [RequestID: {}, Host: {}]", request_id, host);
                                     break;
                                 }
                                 Ok(n) => {
@@ -52,10 +52,10 @@ impl TunnelInterceptor {
                                     timeout.as_mut().reset(tokio::time::Instant::now() + TIMEOUT_DURATION);
 
                                     if let Err(e) = plugin_manager.handle_data(request_id, DataDirection::Upstream, &client_buf[..n]).await {
-                                        error!("统计上行流量失败: {}", e);
+                                        error!("Upstream Traffic Statistics Failed: {}", e);
                                     }
                                     if let Err(e) = target_stream.write_all(&client_buf[..n]).await {
-                                        error!("写入目标服务器失败: {}", e);
+                                        error!("Write to Target Server Failed: {}", e);
                                         error_count += 1;
                                         if error_count >= MAX_ERRORS {
                                             break;
@@ -63,7 +63,7 @@ impl TunnelInterceptor {
                                     }
                                 }
                                 Err(e) => {
-                                    error!("从客户端读取失败: {}", e);
+                                    error!("Read from Client Failed: {}", e);
                                     error_count += 1;
                                     if error_count >= MAX_ERRORS {
                                         break;
@@ -74,7 +74,7 @@ impl TunnelInterceptor {
                         result = target_stream.read(&mut server_buf) => {
                             match result {
                                 Ok(0) => {
-                                    info!("服务正常关闭连接 [RequestID: {}]", request_id);
+                                    info!("Target Server Connection Closed [RequestID: {}]", request_id);
                                     break;
                                 }
                                 Ok(n) => {
@@ -82,10 +82,10 @@ impl TunnelInterceptor {
                                     timeout.as_mut().reset(tokio::time::Instant::now() + TIMEOUT_DURATION);
 
                                     if let Err(e) = plugin_manager.handle_data(request_id, DataDirection::Downstream, &server_buf[..n]).await {
-                                        warn!("统计下行流量失败: {}", e);
+                                        warn!("Downstream Traffic Statistics Failed: {}", e);
                                     }
                                     if let Err(e) = client_stream.write_all(&server_buf[..n]).await {
-                                        error!("写入客户端失败: {}", e);
+                                        error!("Write to Client Failed: {}", e);
                                         error_count += 1;
                                         if error_count >= MAX_ERRORS {
                                             break;
@@ -93,7 +93,7 @@ impl TunnelInterceptor {
                                     }
                                 }
                                 Err(e) => {
-                                    error!("从服务器读取失败: {}", e);
+                                    error!("Read from Target Server Failed: {}", e);
                                     error_count += 1;
                                     if error_count >= MAX_ERRORS {
                                         break;
@@ -102,7 +102,7 @@ impl TunnelInterceptor {
                             }
                         }
                         _ = &mut timeout => {
-                            error!("连接超时（{}秒无数据传输），闭隧道 [RequestID: {}, Host: {}]",
+                            error!("Connection Timeout ({} seconds without data transmission), Close Tunnel [RequestID: {}, Host: {}]",
                                 TIMEOUT_DURATION.as_secs(), request_id, host);
                             break;
                         }
@@ -120,18 +120,21 @@ impl TunnelInterceptor {
                 }
             }
             Err(e) => {
-                error!("处理连接失败: {}", e);
+                error!("Handle Connection Failed: {}", e);
             }
         };
 
         // 在隧道关闭时调用插件的 on_connect_close
         if let Err(e) = plugin_manager.handle_connect_close(request_id, &host).await {
             error!(
-                "处理连接关闭失败 [RequestID: {}, Host: {}]: {}",
+                "Handle Connection Close Failed [RequestID: {}, Host: {}]: {}",
                 request_id, host, e
             );
         }
-        info!("HTTPS 隧道关闭 [RequestID: {}, Host: {}]", request_id, host);
+        info!(
+            "HTTPS Tunnel Closed [RequestID: {}, Host: {}]",
+            request_id, host
+        );
     }
     // 隧道代理预处理
     pub async fn handle_tunnel_proxy(
@@ -145,7 +148,7 @@ impl TunnelInterceptor {
                 tokio::spawn(async move {
                     match hyper::upgrade::on(req).await {
                         Ok(upgraded) => {
-                            info!("正在建立到 {} 的 HTTPS 隧道 [Host: {}]", addr, host);
+                            info!("Establishing HTTPS Tunnel to {} [Host: {}]", addr, host);
                             let cloned_req = Request::builder()
                                 .method(hyper::Method::CONNECT)
                                 .uri(format!("https://{}", host))
@@ -160,7 +163,7 @@ impl TunnelInterceptor {
                             )
                             .await;
                         }
-                        Err(e) => error!("连接升级失败: {}", e),
+                        Err(e) => error!("Upgrade Connection Failed: {}", e),
                     }
                 });
 
@@ -173,7 +176,7 @@ impl TunnelInterceptor {
                     .unwrap())
             }
             Err(e) => {
-                error!("连接目标服务器失败: {}", e);
+                error!("Connect to Target Server Failed: {}", e);
                 Ok(Response::builder()
                     .status(502)
                     .body(Empty::new().map_err(|never| match never {}).boxed())

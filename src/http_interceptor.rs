@@ -41,7 +41,7 @@ impl HttpInterceptor {
             return match Websocket::handle_websocket(req).await {
                 Ok(response) => Ok(response),
                 Err(e) => {
-                    error!("WebSocket 升级失败: {}", e);
+                    error!("WebSocket Upgrade Failed: {}", e);
                     let body = Full::from(Bytes::from("WebSocket upgrade failed"))
                         .map_err(|never| match never {})
                         .boxed();
@@ -52,7 +52,7 @@ impl HttpInterceptor {
         match HttpInterceptor::http_request(req).await {
             Ok(response) => Ok(response),
             Err(e) => {
-                error!("HTTP请求处理失败: {}", e);
+                error!("HTTP Request Failed: {}", e);
                 let body = Full::from(Bytes::from("Internal Server Error"))
                     .map_err(|never| match never {})
                     .boxed();
@@ -109,7 +109,9 @@ impl HttpInterceptor {
         };
 
         // 构建新请求
-        let mut builder = Request::builder().method(req.method()).uri(uri_string);
+        let mut builder = Request::builder()
+            .method(req.method())
+            .uri(uri_string.clone());
 
         // 复制所有请求头
         for (name, value) in req.headers() {
@@ -119,7 +121,7 @@ impl HttpInterceptor {
 
         let new_req = builder
             .body(req.into_body())
-            .map_err(|e| format!("构建请求失败: {}", e))?;
+            .map_err(|e| format!("Build Request Failed: {}", e))?;
         // 处理请求，如果插件返回 false，表示不继续处理
         let mut new_req = new_req;
         match PluginManager::global()
@@ -137,7 +139,7 @@ impl HttpInterceptor {
             }
             Ok((true, _)) => (), // 继续处理
             Err(e) => {
-                error!("插件处理请求失败: {}", e);
+                error!("Plugin Handle Request Failed: {}", e);
                 let body = Full::from(Bytes::from("Internal Server Error"))
                     .map_err(|never| match never {})
                     .boxed();
@@ -146,15 +148,18 @@ impl HttpInterceptor {
         }
         match client.request(new_req).await {
             Ok(response) => {
-                info!("请求转发成功 [Host: {}]", host);
+                info!(
+                    "HTTP Request Success [Protocol: {}], Host: {}",
+                    uri_string.split("://").next().unwrap_or(""),
+                    host
+                );
                 Ok(response.map(|b| b.boxed()))
             }
             Err(e) => {
-                error!("请求转发失败 [Host: {}] ,错误: {}", host, e);
+                error!("HTTP Request Failed [URI: {}]: {}", uri_string, e);
                 Ok(Self::build_502_error(&format!(
-                    "{} Bad Gateway: {}",
-                    host,
-                    e.to_string()
+                    "Service Unavailable. Can't Connect to Target Server [{}]",
+                    host
                 )))
             }
         }
