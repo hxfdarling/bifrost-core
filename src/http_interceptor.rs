@@ -8,7 +8,7 @@ use log::{error, info};
 use std::convert::Infallible;
 use std::error::Error;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hyper_util::rt::TokioExecutor;
 
@@ -146,20 +146,28 @@ impl HttpInterceptor {
                 return Ok(Response::builder().status(500).body(body).unwrap());
             }
         }
+        let start_time = Instant::now();
         match client.request(new_req).await {
             Ok(response) => {
                 info!(
-                    "HTTP Request Success [Protocol: {}], Host: {}",
+                    "HTTP Request Success [Protocol: {}], [Time: {:?}], Host: {}",
                     uri_string.split("://").next().unwrap_or(""),
+                    start_time.elapsed(),
                     host
                 );
                 Ok(response.map(|b| b.boxed()))
             }
             Err(e) => {
-                error!("HTTP Request Failed [URI: {}]: {}", uri_string, e);
+                error!(
+                    "HTTP Request Failed [URI: {}], [Time: {:?}]: {}",
+                    uri_string,
+                    start_time.elapsed(),
+                    e
+                );
                 Ok(Self::build_502_error(&format!(
-                    "Service Unavailable. Can't Connect to Target Server [{}]",
-                    host
+                    "Service Unavailable. Can't Connect to Target Server [{}], [Time: {:?}]",
+                    host,
+                    start_time.elapsed()
                 )))
             }
         }

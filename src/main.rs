@@ -138,7 +138,7 @@ async fn main() {
     PluginManager::init();
 
     // 启动统计信息打印任务
-    TrafficStatsPlugin::start_stats_printer();
+    // TrafficStatsPlugin::start_stats_printer();
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let proxy_server = Arc::new(ProxyServer::new());
 
