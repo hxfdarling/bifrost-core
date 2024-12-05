@@ -8,16 +8,24 @@ use log::{error, info};
 use std::convert::Infallible;
 use std::error::Error;
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hyper_util::rt::TokioExecutor;
 
 use crate::plugin::PluginManager;
 use crate::store::REQUEST_ID_COUNTER;
 use crate::websocket_interceptor::Websocket;
+use dashmap::DashMap;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, LazyLock};
 
 type Result<T, E = Box<dyn Error + Send + Sync>> = std::result::Result<T, E>;
+
+// DNS 缓存, 全局共享
+static DNS_CACHE: LazyLock<Arc<DashMap<String, (Vec<std::net::SocketAddr>, u64)>>> =
+    LazyLock::new(|| Arc::new(DashMap::new()));
+const CACHE_DURATION: u64 = 300; // 5分钟缓存时间（秒）
+
 #[derive(Clone)]
 pub struct HttpInterceptor {}
 
@@ -33,9 +41,68 @@ impl HttpInterceptor {
             )
             .unwrap()
     }
+    // 新增的 DNS 查询函数
+    async fn dns_lookup(host: &str) -> Result<Vec<std::net::SocketAddr>> {
+        let start_time = Instant::now();
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // 检查缓存
+        if let Some(entry) = DNS_CACHE.get(host) {
+            let (addrs, timestamp) = entry.value();
+            if current_time - timestamp < CACHE_DURATION {
+                info!(
+                    "DNS Cache Hit [host: {}], [Time: {:?}]",
+                    host,
+                    start_time.elapsed()
+                );
+                return Ok(addrs.clone());
+            }
+        }
+
+        let port = host.split(':').nth(1).unwrap_or("443");
+        let addr = (
+            host.split(':').next().unwrap(),
+            port.parse::<u16>().unwrap(),
+        );
+        info!("DNS Lookup [addr: {:?}]", addr);
+
+        match tokio::net::lookup_host(addr).await {
+            Ok(addrs) => {
+                let addrs = addrs.collect::<Vec<_>>();
+                // 更新缓存
+                DNS_CACHE.insert(host.to_string(), (addrs.clone(), current_time));
+                info!(
+                    "DNS Lookup Success [addr: {:?}], [Time: {:?}]",
+                    addr,
+                    start_time.elapsed()
+                );
+                Ok(addrs)
+            }
+            Err(e) => {
+                error!(
+                    "DNS Lookup Failed: {}, [Time: {:?}]",
+                    e,
+                    start_time.elapsed()
+                );
+                Err(e.into())
+            }
+        }
+    }
     pub async fn handle_http(
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
+        let host = HttpInterceptor::get_host(&req);
+
+        if let Err(_) = HttpInterceptor::dns_lookup(&host).await {
+            return Ok(HttpInterceptor::build_502_error(&format!(
+                "DNS Lookup Failed: [{}]",
+                &host
+            )));
+        }
+
         // 检查是否为 WebSocket 升级请求
         if Websocket::is_websocket_upgrade(&req) {
             return match Websocket::handle_websocket(req).await {
@@ -60,12 +127,8 @@ impl HttpInterceptor {
             }
         }
     }
-
-    pub async fn http_request(
-        req: Request<Incoming>,
-    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-        // 从请求头中获取 host，HTTP/2 中 :authority 伪头部字段替代了 Host 头
-        let host = if req.version() == hyper::Version::HTTP_2 {
+    fn get_host(req: &Request<Incoming>) -> String {
+        if req.version() == hyper::Version::HTTP_2 {
             // 对于 HTTP/2，首先尝试从 :authority 伪头部获取
             req.uri()
                 .authority()
@@ -84,8 +147,13 @@ impl HttpInterceptor {
                 .and_then(|h| h.to_str().ok())
                 .unwrap_or("localhost")
                 .to_string()
-        };
+        }
+    }
 
+    pub async fn http_request(
+        req: Request<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        let host = HttpInterceptor::get_host(&req);
         let https = HttpsConnector::new();
         let client = Client::builder(TokioExecutor::new())
             .http1_title_case_headers(true)
@@ -107,6 +175,7 @@ impl HttpInterceptor {
         } else {
             req.uri().to_string()
         };
+        info!("HTTP Request [URI: {}]", uri_string);
 
         // 构建新请求
         let mut builder = Request::builder()

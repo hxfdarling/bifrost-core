@@ -7,13 +7,10 @@ use hyper_util::rt::TokioIo;
 use log::{error, info};
 
 use std::error::Error;
-use std::time::Duration;
 type Result<T, E = Box<dyn Error + Send + Sync>> = std::result::Result<T, E>;
 use futures_util::{SinkExt, StreamExt};
 
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 pub struct Websocket {}
 
 impl Websocket {
@@ -65,40 +62,151 @@ impl Websocket {
             host
         );
 
-        // 构建新的请求,保留原始请求的所有头部
+        // 逐个尝试每个子协议
+
         let mut request_builder = Request::builder().uri(target_uri.clone()).method("GET");
 
-        // 复制所有原始请求头
+        // 复制其他请求头
         for (name, value) in req.headers() {
             request_builder = request_builder.header(name, value);
         }
-        // 连接到目标服务器
-        let request = request_builder
-            .body(())
-            .map_err(|e| format!("构建请求失败: {}", e))?;
+        // connect to target service
+        match connect_async(request_builder.body(()).unwrap()).await {
+            Ok((target_ws_stream, response)) => {
+                info!(
+                    "WebSocket connection to target service success, [Host: {}]",
+                    host
+                );
+                // upgrade to websocket
+                tokio::spawn(async move {
+                    match hyper::upgrade::on(req).await {
+                        Ok(upgraded) => {
+                            info!("WebSocket upgrade success [Host: {}]", host);
+                            let ws_config =
+                                tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default(
+                                );
 
-        // 使用构建好的请求发起连接
-        match connect_async(request).await {
-            Ok((_, response)) => {
-                info!("WebSocket Connection Success [Host: {}]", host);
+                            // 创建客户端 WebSocket 流
+                            let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                                TokioIo::new(upgraded),
+                                tokio_tungstenite::tungstenite::protocol::Role::Server,
+                                Some(ws_config),
+                            )
+                            .await;
 
-                // 构建升级响应
+                            let host = host.to_string();
+                            let (mut client_write, mut client_read) = ws_stream.split();
+                            let (mut target_write, mut target_read) = target_ws_stream.split();
+
+                            info!("WebSocket Connection Success [Host: {}]", host);
+
+                            // 创建两个转发任务
+                            let client_to_server = async {
+                                while let Some(msg) = client_read.next().await {
+                                    match msg {
+                                        Ok(msg) => {
+                                            if let Err(e) = target_write.send(msg).await {
+                                                error!(
+                                                    "Send message to target service failed, [Host: {}]: {}",
+                                                    host, e
+                                                );
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "Read message from client failed, [Host: {}]: {}",
+                                                host, e
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            };
+
+                            let server_to_client = async {
+                                while let Some(msg) = target_read.next().await {
+                                    match msg {
+                                        Ok(msg) => {
+                                            if let Err(e) = client_write.send(msg).await {
+                                                error!(
+                                                    "Send message to client failed, [Host: {}]: {}",
+                                                    host, e
+                                                );
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "Read message from target service failed, [Host: {}]: {}",
+                                                host, e
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            };
+
+                            // 同时运行两个转发任务
+                            tokio::select! {
+                                _ = client_to_server => {
+                                    info!("Client to target service forwarding task ended, [Host: {}]", host);
+                                    // 发送关闭帧
+                                    if let Err(e) = client_write.close().await {
+                                        error!(
+                                            "Close client connection failed, [Host: {}]: {}",
+                                            host, e
+                                        );
+                                    }
+                                    if let Err(e) = target_write.close().await {
+                                        error!(
+                                            "Close target service connection failed, [Host: {}]: {}",
+                                            host, e
+                                        );
+                                    }
+                                },
+                                _ = server_to_client => {
+                                    info!(
+                                        "Target service to client forwarding task ended, [Host: {}]",
+                                        host
+                                    );
+                                    // 发送关闭帧
+                                    if let Err(e) = client_write.close().await {
+                                        error!(
+                                            "Close client connection failed, [Host: {}]: {}",
+                                            host, e
+                                        );
+                                    }
+                                    if let Err(e) = target_write.close().await {
+                                        error!(
+                                            "Close target service connection failed, [Host: {}]: {}",
+                                            host, e
+                                        );
+                                    }
+                                },
+                            }
+                        }
+                        Err(e) => {
+                            error!("WebSocket upgrade failed [Host: {}]: {}", host, e);
+                        }
+                    }
+                });
+
+                // 成功连接，直接返回
                 let mut response_builder = Response::builder().status(response.status());
-                // 复制所有响应头
                 for (name, value) in response.headers() {
                     response_builder = response_builder.header(name, value);
                 }
-
-                let host = host.to_string();
-                tokio::spawn(async move {
-                    Websocket::handle_websocket_upgrade(req, target_uri, host).await;
-                });
-                Ok(response_builder
+                // return empty response
+                return Ok(response_builder
                     .body(Empty::new().map_err(|never| match never {}).boxed())
-                    .unwrap())
+                    .unwrap());
             }
             Err(e) => {
-                error!("WebSocket Connection Failed [Target URI: {}]", target_uri);
+                info!(
+                    "WebSocket connection to target service failed, [Host: {}]: {}",
+                    host, e
+                );
                 Ok(Response::builder()
                     .status(502)
                     .body(
@@ -108,120 +216,6 @@ impl Websocket {
                     )
                     .unwrap())
             }
-        }
-    }
-    // 处理 WebSocket 连接升级和消息转发
-    async fn handle_websocket_upgrade(req: Request<Incoming>, target_uri: String, host: String) {
-        match hyper::upgrade::on(req).await {
-            Ok(upgraded) => {
-                let ws_config =
-                    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
-
-                // 创建客户端 WebSocket 流
-                let mut ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
-                    TokioIo::new(upgraded),
-                    tokio_tungstenite::tungstenite::protocol::Role::Server,
-                    Some(ws_config),
-                )
-                .await;
-
-                // 设置连接超时
-                let connect_timeout =
-                    tokio::time::timeout(Duration::from_secs(60), connect_async(&target_uri));
-
-                match connect_timeout.await {
-                    Ok(connect_result) => {
-                        match connect_result {
-                            Ok((target_ws_stream, _)) => {
-                                let (mut client_write, mut client_read) = ws_stream.split();
-                                let (mut target_write, mut target_read) = target_ws_stream.split();
-
-                                info!("WebSocket Connection Success [Host: {}]", host);
-
-                                // 创建两个转发任务
-                                let client_to_server = async {
-                                    while let Some(msg) = client_read.next().await {
-                                        match msg {
-                                            Ok(msg) => {
-                                                if let Err(e) = target_write.send(msg).await {
-                                                    error!(
-                                                        "发送消息到服务器失败 [Host: {}]: {}",
-                                                        host, e
-                                                    );
-                                                    break;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "从客户端读取消息失败 [Host: {}]: {}",
-                                                    host, e
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                };
-
-                                let server_to_client = async {
-                                    while let Some(msg) = target_read.next().await {
-                                        match msg {
-                                            Ok(msg) => {
-                                                if let Err(e) = client_write.send(msg).await {
-                                                    error!(
-                                                        "发送消息到客户端失败 [Host: {}]: {}",
-                                                        host, e
-                                                    );
-                                                    break;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "从服务器读取消息失败 [Host: {}]: {}",
-                                                    host, e
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                };
-
-                                // 同时运行两个转发任务
-                                tokio::select! {
-                                    _ = client_to_server => {},
-                                    _ = server_to_client => {},
-                                }
-                            }
-                            Err(e) => {
-                                error!("连接目标 WebSocket 服务器失败 [Host: {}]: {}", host, e);
-                                // 发送关闭帧并等待关闭完成
-                                if let Err(e) = ws_stream
-                                    .close(Some(CloseFrame {
-                                        code: CloseCode::Error,
-                                        reason: "连接目标服务器失败".into(),
-                                    }))
-                                    .await
-                                {
-                                    error!("关闭 WebSocket 连接失败 [Host: {}]: {}", host, e);
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        error!("连接目标 WebSocket 服务器超时 [Host: {}]", host);
-                        // 发送关闭帧并等待关闭完成
-                        if let Err(e) = ws_stream
-                            .close(Some(CloseFrame {
-                                code: CloseCode::Normal,
-                                reason: "连接目标服务器超时".into(),
-                            }))
-                            .await
-                        {
-                            error!("关闭 WebSocket 连接失败 [Host: {}]: {}", host, e);
-                        }
-                    }
-                }
-            }
-            Err(e) => error!("WebSocket 升级失败 [Host: {}]: {}", host, e),
         }
     }
 }
