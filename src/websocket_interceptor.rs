@@ -68,8 +68,24 @@ impl Websocket {
 
         // 复制其他请求头
         for (name, value) in req.headers() {
-            request_builder = request_builder.header(name, value);
+            if name != hyper::header::SEC_WEBSOCKET_PROTOCOL {
+                request_builder = request_builder.header(name, value);
+            } else {
+                // 修复 tungstenite-rs/handshake/client.rs 判断服务器返回的子协议异常（没有去除空格)
+                let sub_protocol = req
+                    .headers()
+                    .get(hyper::header::SEC_WEBSOCKET_PROTOCOL)
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect::<Vec<String>>()
+                    .join(",");
+                request_builder = request_builder
+                    .header(hyper::header::SEC_WEBSOCKET_PROTOCOL, sub_protocol.as_str());
+            }
         }
+
         // connect to target service
         match connect_async(request_builder.body(()).unwrap()).await {
             Ok((target_ws_stream, response)) => {
