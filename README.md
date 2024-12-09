@@ -1,7 +1,7 @@
 # Bifrost Core
 
 # 如何开始开发？
-1. 安装rust开发工具，建议使用vscode 作为IDE
+1. 安装 (rust)[https://www.rust-lang.org/learn/get-started] 开发工具，建议使用vscode/cursor 作为IDE
 2. 使用cargo run 启动服务
 3. 配合浏览器的代理插件 Proxy SwitchyOmega，进行代理测试
 
